@@ -292,3 +292,34 @@ License: For use in educational or controlled red team engagements only.
 
 Keywords: Wi-Fi cracking, embedded AI, M5Stack, PassGAN, Bruce firmware, red team automation, reinforcement learning, wireless security
 
+The AI Warlord project leverages the M5Stack LLM630 Compute Kit to run small AI models directly on the device, primarily for tasks like intelligent password cracking. Control is handed over to these AI models (which can include small LLMs) through a hybrid AI orchestration system designed to make autonomous decisions.
+
+Here's how it works:
+
+How the Small LLM Runs on the Device
+Dedicated Hardware: The M5Stack LLM630 features an Axera AX630C SoC with a Neural Processing Unit (NPU) capable of delivering 3.2 TOPS of AI compute. This NPU is specifically optimized for efficient on-device AI inference, allowing it to run advanced machine learning models (like neural networks for vision or language) without needing cloud connectivity for processing.
+
+Linux Environment: The Axera AX630C SoC also includes dual ARM Cortex-A53 cores running a full Linux environment (e.g., Ubuntu). This environment hosts the necessary AI libraries and inference engines that load and execute the pre-trained AI models on the NPU.
+
+Specific AI Models: For password cracking, the system is intended to run models like PassGAN or other small, purpose-built LLMs (Large Language Models) that can intelligently generate password candidates based on learned patterns, significantly enhancing brute-force capabilities beyond simple dictionary attacks.
+
+How Control is Given to the Large Language Model
+While the project refers to "AI orchestration" and "AI decision-making," the control isn't typically handed directly to a massive, general-purpose "large language model" in the traditional sense (like ChatGPT running on cloud servers). Instead, the autonomy is achieved through:
+
+Hybrid AI Orchestration: The core of the Warlord's autonomy is its hybrid AI decision-making system. This system combines:
+
+Rule-based Logic: For well-defined attack steps and known vulnerabilities.
+
+Reinforcement Learning (RL): For adaptive, optimized attack strategies in dynamic and unpredictable network environments. The RL models learn from successful and failed attempts to refine their approach.
+
+AI-Driven Decision Loop: An ai_main_loop acts as the brain, where the integrated AI models (including the small LLMs for specific tasks like password generation) are responsible for:
+
+Intelligent Target Selection: Deciding which Wi-Fi networks to attack.
+
+Adaptive Attack Sequencing: Determining the next best action in the kill chain (e.g., capture handshake, crack password, scan LAN, exploit SMB, establish persistence).
+
+Feedback Loops: Continuously learning from the outcomes of its actions to improve its future decision-making.
+
+On-Device Autonomy: By combining "neural inference and hacking logic on-device," the system removes the need for constant human oversight. The embedded AI models and their orchestration logic are designed to make real-time decisions and execute attack steps autonomously, progressing through the network infiltration and domination phases independently.
+
+In essence, the "Large Language Model" in the project's context refers to the comprehensive, intelligent decision-making capability of the entire AI orchestration system, which integrates smaller, specialized AI models (including purpose-built LLMs) and traditional logic to achieve autonomous operation rather than relying on a single, massive, external LLM.
