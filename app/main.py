@@ -9,8 +9,9 @@ import time
 import threading
 import json
 import os
-import subprocess # Used for calling external Linux system tools (e.g., aircrack-ng, nmap)
+import subprocess  # Used for calling external Linux system tools (e.g., aircrack-ng, nmap)
 import re           # Used for parsing text output from command-line tools
+import asyncio      # Required for asynchronous BLE communication
 
 # --- Configuration Constants ---
 # Define paths for logging and AI models. These paths should exist on the M5Stack's
@@ -66,6 +67,13 @@ def update_status(status_msg, phase=None, target=None):
         warlord_state["current_target_ssid"] = target
     
     print(log_entry) # Also print to console for debugging and local visibility
+
+    # If the Bluetooth interface has been initialized, push the update over BLE
+    try:
+        bluetooth_interface.send_status_via_ble(warlord_state)
+    except NameError:
+        # bluetooth_interface may not be created yet during startup
+        pass
 
 def log_to_sd_card(filename, data):
     """
@@ -1630,15 +1638,23 @@ def handle_command():
 # and system-level Bluetooth services.
 
 class BluetoothInterface:
-    def __init__(self):
+    def __init__(self, target_device_mac=None):
+        """Initialize the Bluetooth Interface.
+
+        Args:
+            target_device_mac (str, optional): MAC address of the BLE device that
+                should receive status updates. If ``None`` the interface will
+                still advertise but notifications will be skipped until a target
+                is provided.
         """
-        Initializes the Bluetooth Interface with a device name and example UUIDs.
-        """
-        self.ble_device_name = "WarlordAI_BLE" # The name advertised via Bluetooth.
-        # Example UUIDs for BLE services and characteristics.
-        # In a real app, these would be custom UUIDs for Warlord-specific functions.
-        self.service_uuid = "0000180D-0000-1000-8000-00805F9B34FB" # Example: Heart Rate Service UUID
-        self.char_uuid_control = "00002A37-0000-1000-8000-00805F9B34FB" # Example: Heart Rate Measurement Characteristic
+        self.ble_device_name = "WarlordAI_BLE"  # Name advertised via Bluetooth
+        # Example UUIDs for BLE services and characteristics. In a real app these
+        # would be custom values.
+        self.service_uuid = "0000180D-0000-1000-8000-00805F9B34FB"
+        self.char_uuid_control = "00002A37-0000-1000-8000-00805F9B34FB"
+
+        # Optional target device MAC address for sending notifications
+        self.target_device_mac = target_device_mac
 
     def advertise_ble(self):
         """
@@ -1668,18 +1684,32 @@ class BluetoothInterface:
     def send_status_via_ble(self, status_data):
         """
         Sends current operational status updates from the Warlord via BLE notifications.
-        This is a conceptual function.
+        Attempts to connect to a predefined BLE device and write the status
+        information to a characteristic so that a companion app can display
+        real-time updates.
 
         Args:
             status_data (dict): A dictionary containing status information to send.
         """
-        # This would involve writing the `status_data` to a BLE characteristic
-        # configured for notifications, so connected clients receive updates.
-        # update_status(f"Sending status via BLE: {status_data['status']}", "Bluetooth") # Too frequent for log
-        pass # This function is a placeholder and would be called frequently by the AI.
+        if not self.target_device_mac:
+            return  # No target device configured
 
-# Instantiate the Bluetooth Interface module.
-bluetooth_interface = BluetoothInterface()
+        try:
+            from bleak import BleakClient
+
+            async def _send():
+                async with BleakClient(self.target_device_mac) as client:
+                    data = json.dumps(status_data).encode()
+                    await client.write_gatt_char(self.char_uuid_control, data, response=True)
+
+            asyncio.run(_send())
+        except Exception as e:
+            update_status(f"BLE status send failed: {e}", "Error")
+
+
+# Instantiate the Bluetooth Interface module. Replace "00:11:22:33:44:55" with
+# the MAC address of the device that should receive status updates.
+bluetooth_interface = BluetoothInterface(target_device_mac=os.getenv("WARLORD_BLE_MAC", None))
 
 # --- Main Application Entry Point ---
 # This block is executed when the Python script is run directly.
