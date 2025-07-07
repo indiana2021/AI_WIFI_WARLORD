@@ -9,7 +9,8 @@ import time
 import threading
 import json
 import os
-import subprocess # Used for calling external Linux system tools (e.g., aircrack-ng, nmap)
+import asyncio
+import subprocess  # Used for calling external Linux system tools (e.g., aircrack-ng, nmap)
 import re           # Used for parsing text output from command-line tools
 
 # --- Configuration Constants ---
@@ -64,8 +65,20 @@ def update_status(status_msg, phase=None, target=None):
         warlord_state["current_phase"] = phase
     if target:
         warlord_state["current_target_ssid"] = target
-    
-    print(log_entry) # Also print to console for debugging and local visibility
+
+    print(log_entry)  # Also print to console for debugging and local visibility
+
+    # Broadcast status updates over BLE if the interface is available
+    if "bluetooth_interface" in globals():
+        try:
+            bluetooth_interface.send_status_via_ble({
+                "status": warlord_state["status"],
+                "phase": warlord_state["current_phase"],
+                "target": warlord_state["current_target_ssid"]
+            })
+        except Exception as e:
+            # Avoid spamming the log if BLE fails frequently
+            print(f"BLE status send failed: {e}")
 
 def log_to_sd_card(filename, data):
     """
@@ -1634,11 +1647,14 @@ class BluetoothInterface:
         """
         Initializes the Bluetooth Interface with a device name and example UUIDs.
         """
-        self.ble_device_name = "WarlordAI_BLE" # The name advertised via Bluetooth.
+        self.ble_device_name = "WarlordAI_BLE"  # The name advertised via Bluetooth.
         # Example UUIDs for BLE services and characteristics.
         # In a real app, these would be custom UUIDs for Warlord-specific functions.
-        self.service_uuid = "0000180D-0000-1000-8000-00805F9B34FB" # Example: Heart Rate Service UUID
-        self.char_uuid_control = "00002A37-0000-1000-8000-00805F9B34FB" # Example: Heart Rate Measurement Characteristic
+        self.service_uuid = "0000180D-0000-1000-8000-00805F9B34FB"  # Example: Heart Rate Service UUID
+        self.char_uuid_control = "00002A37-0000-1000-8000-00805F9B34FB"  # Example: Heart Rate Measurement Characteristic
+        # Optional MAC address of a control device to send status updates to.
+        # This can be set via the environment variable WARLORD_CONTROL_MAC.
+        self.control_device_address = os.environ.get("WARLORD_CONTROL_MAC")
 
     def advertise_ble(self):
         """
@@ -1668,15 +1684,32 @@ class BluetoothInterface:
     def send_status_via_ble(self, status_data):
         """
         Sends current operational status updates from the Warlord via BLE notifications.
-        This is a conceptual function.
+        When a control device MAC address is configured, this method will
+        connect to that device and write the status JSON to the configured
+        characteristic using the ``bleak`` library.
 
         Args:
             status_data (dict): A dictionary containing status information to send.
         """
-        # This would involve writing the `status_data` to a BLE characteristic
-        # configured for notifications, so connected clients receive updates.
-        # update_status(f"Sending status via BLE: {status_data['status']}", "Bluetooth") # Too frequent for log
-        pass # This function is a placeholder and would be called frequently by the AI.
+        if not self.control_device_address:
+            return  # No known control device to send to.
+
+        async def _send():
+            try:
+                from bleak import BleakClient
+
+                async with BleakClient(self.control_device_address) as client:
+                    payload = json.dumps(status_data).encode()
+                    await client.write_gatt_char(self.char_uuid_control, payload)
+            except Exception as e:
+                update_status(f"BLE send error: {e}", "Error")
+
+        try:
+            asyncio.run(_send())
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            loop.run_until_complete(_send())
+            loop.close()
 
 # Instantiate the Bluetooth Interface module.
 bluetooth_interface = BluetoothInterface()
