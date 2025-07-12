@@ -1,4 +1,4 @@
-# 🧠 AI Network Guardian: Your Network's AI-Powered Sentry 🛡️
+# 🦠 AI Network Guardian: Your Network's AI-Powered Sentry 🛡️
 
 ![Guardian Logo](assets/guardian_logo.png)
 
@@ -10,18 +10,98 @@ This project is a proof-of-concept for a new era of consumer-friendly, AI-powere
 
 ---
 
-## 🚀 Project Status: Advanced Prototype
+## 🔧 Extended Toolset for AI-Driven Security
 
-The AI Network Guardian is a mature prototype, featuring robust security analysis modules and sophisticated AI-driven decision-making. It's a truly autonomous agent for managing and securing your personal network.
+To empower the LLM and enable advanced, autonomous security analysis and simulation, the following additional tools are recommended:
 
-**Current State (Implemented & AI-Driven):**
+- **bettercap**: Modern MITM, ARP poisoning, DNS spoofing, credential harvesting, scriptable via CLI/API.
+- **ettercap**: Classic MITM suite for ARP poisoning, sniffing, protocol dissection.
+- **dnsspoof**: Simple DNS spoofing on a LAN (part of dsniff).
+- **dnschef**: Highly configurable DNS proxy for targeted DNS redirection/poisoning.
+- **tcpdump**: Lightweight, scriptable packet capture for traffic analysis.
+- **tshark**: CLI version of Wireshark for deep packet/protocol inspection.
+- **arp-scan**: Specialized ARP network scanner.
+- **arpwatch**: Monitors ARP traffic for suspicious changes (anomaly detection).
+- **netdiscover**: Fast ARP scanner for live host discovery.
+- **wifite**: Automated wireless attack tool (WEP/WPA handshake capture, WPS, etc.).
+- **hcxdumptool / hcxpcapngtool**: Advanced WPA handshake and PMKID capture.
+- **evilginx2**: Advanced phishing/MITM framework (for authorized testing only).
+- **set (Social-Engineer Toolkit)**: Simulate phishing/social engineering attacks.
+- **suricata**: IDS/IPS engine for real-time traffic analysis and alerting.
+- **nethogs**: Real-time network traffic per process (anomaly detection).
+- **iftop / iptraf**: Real-time bandwidth monitoring.
+- **whois, dig, nslookup**: External network intelligence and DNS analysis.
 
-*   **Hardware Foundation:** Fully integrated with the M5Stack LLM630 Compute Kit (Axera AX630C SoC with NPU, ESP32-C6).
-*   **Core Modules:** Functional classes for Wi-Fi Security Auditing, AI Password Strength Analysis, LAN Analysis, AI Decision-Making, and a Web Dashboard.
-*   **AI Orchestration:** The `ai_main_loop` is driven by an on-device LLM, making real-time strategic decisions to identify and mitigate risks.
-*   **Web Dashboard:** An enhanced Flask web server with an HTML template provides real-time status, live log streams, network audit results, and detailed connected host information.
-*   **Automatic Tool Installation:** The script attempts to install necessary Linux tools (e.g., `dsniff`, `reaver`, `hostapd`, `dnsmasq`, `nikto`, `hydra`, `smbclient`, `metasploit-framework`) for comprehensive analysis.
-*   **Security Simulation:** Integrates the Metasploit framework for automated, simulated penetration tests to safely identify and patch vulnerabilities.
+These tools enable the LLM to:
+- Simulate and detect ARP/DNS attacks
+- Perform advanced MITM, phishing, and credential harvesting simulations
+- Capture and analyze network traffic
+- Monitor for anomalies and defend in real time
+
+---
+
+## ⚠️ Requirements
+
+- **Debian Linux** (or compatible, with apt)
+- **Root privileges** (the app will refuse to start if not run as root)
+- **Required Linux tools** (must be installed and in PATH):
+  - airmon-ng, airodump-ng, aireplay-ng, aircrack-ng, nmcli, iw, reaver, hostapd, dnsmasq
+  - nmap, ip, arpspoof, nikto, hydra, smbclient, dhcpd, curl, masscan, ntlmrelayx.py
+  - bettercap, ettercap, dnsspoof, dnschef, tcpdump, tshark, arp-scan, arpwatch, netdiscover, wifite, hcxdumptool, hcxpcapngtool, evilginx2, set, suricata, nethogs, iftop, iptraf, whois, dig, nslookup
+- **Python 3.8+** and dependencies in `requirements.txt`
+
+The app will check for all required tools and root at startup and exit with a clear error if any are missing.
+
+---
+
+## ⚙️ Configuration
+
+You can override the default log directory and network interfaces using environment variables or a `config.json` file in the project root:
+
+- `GUARDIAN_LOG_PATH` (or `log_path` in config.json): log/state directory (default: `/mnt/sdcard/guardian_logs/`)
+- `GUARDIAN_WIFI_IFACE` (or `wifi_interface` in config.json): Wi-Fi interface (default: `wlan0`)
+- `GUARDIAN_LAN_IFACE` (or `lan_interface` in config.json): LAN interface (default: `eth0`)
+
+Example `config.json`:
+```json
+{
+  "log_path": "/var/log/guardian_logs/",
+  "wifi_interface": "wlan1",
+  "lan_interface": "eth1"
+}
+```
+
+---
+
+## 🚀 Setup & Usage
+
+1. **Install system dependencies:**
+   - Run:
+     ```sh
+     sudo apt-get update && sudo apt-get install -y \
+       airmon-ng airodump-ng aireplay-ng aircrack-ng nmcli iw reaver hostapd dnsmasq \
+       nmap iproute2 dsniff nikto hydra smbclient isc-dhcp-server curl masscan impacket-scripts \
+       bettercap ettercap dnsspoof dnschef tcpdump tshark arp-scan arpwatch netdiscover wifite \
+       hcxdumptool hcxpcapngtool suricata nethogs iftop iptraf whois dnsutils
+     # For evilginx2 and set, see their official install docs (may require manual install)
+     ```
+   - Ensure all tools above are in your PATH.
+2. **Install Python dependencies:**
+   - `pip install -r requirements.txt`
+3. **(Optional) Create and edit `config.json` or set environment variables for custom paths/interfaces.**
+4. **Run the app as root:**
+   - `sudo python3 app/guardian_main.py`
+   - The app will refuse to start if not run as root or if any required tools are missing.
+5. **Access the web dashboard:**
+   - Open `http://<device-ip>:8081` in your browser.
+
+---
+
+## 🧪 Testing
+
+- The test suite requires root and all system tools to be present. Tests will be skipped if requirements are not met.
+- Run tests with:
+  - `python3 tests/run_tests.py`
 
 ---
 

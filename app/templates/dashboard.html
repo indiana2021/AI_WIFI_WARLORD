@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Network Guardian Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .log-entry { animation: fadeIn 0.5s ease-in; }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+        .status-indicator { animation: pulse 2s infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+    </style>
+</head>
+<body class="bg-gray-900 text-white p-8">
+    <h1 class="text-4xl text-green-400 mb-4">AI Network Guardian Dashboard</h1>
+    
+    <!-- Status Section -->
+    <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
+        <div><h2 class="text-xl">Status: <span id="status" class="text-yellow-400"></span></h2></div>
+        <div><h2 class="text-xl">Phase: <span id="phase" class="text-yellow-400"></span></h2></div>
+        <div><h2 class="text-xl">Target: <span id="target" class="text-yellow-400"></span></h2></div>
+        <div><h2 class="text-xl">Audited: <span id="audited-count" class="text-green-400"></span></h2></div>
+    </div>
+
+    <!-- Control Buttons -->
+    <div class="mb-8">
+        <button onclick="sendCommand('start_ai')" class="bg-green-600 hover:bg-green-700 px-4 py-2 rounded mr-4">Start AI Guardian</button>
+        <button onclick="sendCommand('stop_ai')" class="bg-red-600 hover:bg-red-700 px-4 py-2 rounded">Stop AI Guardian</button>
+    </div>
+
+    <!-- Log Stream -->
+    <div class="mb-8">
+        <h2 class="text-2xl mt-4">Log Stream</h2>
+        <div id="log-stream" class="bg-gray-800 p-4 rounded h-64 overflow-y-auto font-mono text-sm"></div>
+    </div>
+
+    <!-- Audited Networks -->
+    <div class="mb-8">
+        <h2 class="text-2xl mt-4">Audited Networks (with weak passwords)</h2>
+        <div id="audited-networks" class="bg-gray-800 p-4 rounded"></div>
+    </div>
+
+    <!-- Analyzed Hosts -->
+    <div class="mb-8">
+        <h2 class="text-2xl mt-4">Analyzed Hosts & Vulnerabilities</h2>
+        <div id="analyzed-hosts" class="bg-gray-800 p-4 rounded"></div>
+    </div>
+
+    <!-- Recent Tool Results -->
+    <div class="mb-8">
+        <h2 class="text-2xl mt-4">Recent Tool Results</h2>
+        <div id="tool-results" class="bg-gray-800 p-4 rounded"></div>
+    </div>
+
+    <script>
+        function updateDashboard() {
+            fetch('/status')
+                .then(response => response.json())
+                .then(data => {
+                    document.getElementById('status').textContent = data.status || 'Unknown';
+                    document.getElementById('phase').textContent = data.phase || 'Unknown';
+                    document.getElementById('target').textContent = data.target || 'None';
+                    document.getElementById('audited-count').textContent = data.audited_networks?.length || 0;
+                    
+                    // Update log stream
+                    const logStream = document.getElementById('log-stream');
+                    if (data.recent_logs) {
+                        logStream.innerHTML = data.recent_logs.map(log => 
+                            `<div class="log-entry text-gray-300">${log}</div>`
+                        ).join('');
+                        logStream.scrollTop = logStream.scrollHeight;
+                    }
+                    
+                    // Update audited networks
+                    const networksDiv = document.getElementById('audited-networks');
+                    if (data.audited_networks && data.audited_networks.length > 0) {
+                        networksDiv.innerHTML = data.audited_networks.map(network => 
+                            `<div class="mb-2 p-2 bg-red-900 rounded">
+                                <strong>${network.ssid}</strong> (${network.bssid}) - 
+                                <span class="text-red-300">Weak password found</span>
+                            </div>`
+                        ).join('');
+                    } else {
+                        networksDiv.innerHTML = '<p class="text-gray-400">No networks with weak passwords found.</p>';
+                    }
+                    
+                    // Update analyzed hosts
+                    const hostsDiv = document.getElementById('analyzed-hosts');
+                    if (data.analyzed_hosts && Object.keys(data.analyzed_hosts).length > 0) {
+                        hostsDiv.innerHTML = Object.entries(data.analyzed_hosts).map(([ip, host]) => 
+                            `<div class="mb-4 p-3 bg-gray-700 rounded">
+                                <h3 class="font-bold">${ip}</h3>
+                                <p>OS: ${host.os}</p>
+                                <p>Ports: ${Object.keys(host.ports).length}</p>
+                                <p>Vulnerabilities: ${Object.keys(host.vulnerabilities).length}</p>
+                                <p>Credentials: ${Object.keys(host.credentials).length}</p>
+                            </div>`
+                        ).join('');
+                    } else {
+                        hostsDiv.innerHTML = '<p class="text-gray-400">No hosts analyzed yet.</p>';
+                    }
+                    
+                    // Update tool results
+                    const toolsDiv = document.getElementById('tool-results');
+                    if (data.recent_tool_results && data.recent_tool_results.length > 0) {
+                        toolsDiv.innerHTML = data.recent_tool_results.map(result => 
+                            `<div class="mb-2 p-2 bg-blue-900 rounded">
+                                <strong>${result.tool}</strong>: ${result.status}
+                            </div>`
+                        ).join('');
+                    } else {
+                        toolsDiv.innerHTML = '<p class="text-gray-400">No recent tool results.</p>';
+                    }
+                })
+                .catch(error => console.error('Error updating dashboard:', error));
+        }
+
+        function sendCommand(command) {
+            fetch('/command', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ command: command })
+            })
+            .then(response => response.json())
+            .then(data => console.log('Command response:', data))
+            .catch(error => console.error('Error sending command:', error));
+        }
+
+        // Update dashboard every 2 seconds
+        setInterval(updateDashboard, 2000);
+        updateDashboard(); // Initial load
+    </script>
+</body>
+</html> 
