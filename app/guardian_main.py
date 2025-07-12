@@ -538,7 +538,7 @@ RESPONSE FORMAT (JSON ONLY):
 
         elif action == "BETTERCAP_MITM":
             args = decision.get("args", [])
-            result = run_bettercap(args)
+            result = run_tool("bettercap", args)
             now = time.ctime()
             guardian_state["tool_results"]["bettercap"] = {"stdout": getattr(result, "stdout", None), "stderr": getattr(result, "stderr", None), "timestamp": now, "args": args}
             if result:
@@ -548,7 +548,7 @@ RESPONSE FORMAT (JSON ONLY):
 
         elif action == "ETTERCAP_MITM":
             args = decision.get("args", [])
-            result = run_ettercap(args)
+            result = run_tool("ettercap", args)
             now = time.ctime()
             guardian_state["tool_results"]["ettercap"] = {"stdout": getattr(result, "stdout", None), "stderr": getattr(result, "stderr", None), "timestamp": now, "args": args}
             if result:
@@ -558,7 +558,7 @@ RESPONSE FORMAT (JSON ONLY):
 
         elif action == "DNSSPOOF":
             args = decision.get("args", [])
-            result = run_dnsspoof(args)
+            result = run_tool("dnsspoof", args)
             if result:
                 update_status(f"dnsspoof output: {result.stdout}", "DNS Spoof")
             else:
@@ -566,7 +566,7 @@ RESPONSE FORMAT (JSON ONLY):
 
         elif action == "DNSCHEF":
             args = decision.get("args", [])
-            result = run_dnschef(args)
+            result = run_tool("dnschef", args)
             if result:
                 update_status(f"dnschef output: {result.stdout}", "DNS Spoof")
             else:
@@ -574,7 +574,7 @@ RESPONSE FORMAT (JSON ONLY):
 
         elif action == "TCPDUMP_CAPTURE":
             args = decision.get("args", [])
-            result = run_tcpdump(args)
+            result = run_tool("tcpdump", args)
             if result:
                 update_status(f"tcpdump output: {result.stdout}", "Packet Capture")
             else:
@@ -582,7 +582,7 @@ RESPONSE FORMAT (JSON ONLY):
 
         elif action == "TSHARK_ANALYZE":
             args = decision.get("args", [])
-            result = run_tshark(args)
+            result = run_tool("tshark", args)
             if result:
                 update_status(f"tshark output: {result.stdout}", "Packet Analysis")
             else:
@@ -590,7 +590,7 @@ RESPONSE FORMAT (JSON ONLY):
 
         elif action == "ARPSCAN":
             args = decision.get("args", [])
-            result = run_arpscan(args)
+            result = run_tool("arp-scan", args)
             if result:
                 update_status(f"arp-scan output: {result.stdout}", "ARP Scan")
             else:
@@ -598,7 +598,7 @@ RESPONSE FORMAT (JSON ONLY):
 
         elif action == "ARPWATCH":
             args = decision.get("args", [])
-            proc = run_arpwatch(args)
+            proc = run_tool("arpwatch", args)
             if proc and hasattr(proc, 'pid'):
                 update_status(f"arpwatch started (pid {proc.pid})", "ARP Watch")
             elif proc:
@@ -608,7 +608,7 @@ RESPONSE FORMAT (JSON ONLY):
 
         elif action == "NETDISCOVER":
             args = decision.get("args", [])
-            result = run_netdiscover(args)
+            result = run_tool("netdiscover", args)
             if result:
                 update_status(f"netdiscover output: {result.stdout}", "Netdiscover")
             else:
@@ -616,7 +616,7 @@ RESPONSE FORMAT (JSON ONLY):
 
         elif action == "WIFITE":
             args = decision.get("args", [])
-            result = run_wifite(args)
+            result = run_tool("wifite", args)
             if result:
                 update_status(f"wifite output: {result.stdout}", "WiFi Attack")
             else:
@@ -624,7 +624,7 @@ RESPONSE FORMAT (JSON ONLY):
 
         elif action == "HCXDUMPT":
             args = decision.get("args", [])
-            result = run_hcxdumptool(args)
+            result = run_tool("hcxdumptool", args)
             if result:
                 update_status(f"hcxdumptool output: {result.stdout}", "WiFi Capture")
             else:
@@ -632,7 +632,7 @@ RESPONSE FORMAT (JSON ONLY):
 
         elif action == "HCXPCAPNG":
             args = decision.get("args", [])
-            result = run_hcxpcapngtool(args)
+            result = run_tool("hcxpcapngtool", args)
             if result:
                 update_status(f"hcxpcapngtool output: {result.stdout}", "WiFi Capture")
             else:
@@ -640,7 +640,7 @@ RESPONSE FORMAT (JSON ONLY):
 
         elif action == "EVILGINX2":
             args = decision.get("args", [])
-            proc = run_evilginx2(args)
+            proc = run_tool("evilginx2", args)
             if proc and hasattr(proc, 'pid'):
                 update_status(f"evilginx2 started (pid {proc.pid})", "Phishing Simulation")
             elif proc:
@@ -650,7 +650,7 @@ RESPONSE FORMAT (JSON ONLY):
 
         elif action == "SETOOLKIT":
             args = decision.get("args", [])
-            proc = run_setoolkit(args)
+            proc = run_tool("setoolkit", args)
             if proc and hasattr(proc, 'pid'):
                 update_status(f"setoolkit started (pid {proc.pid})", "Phishing Simulation")
             elif proc:
@@ -660,7 +660,7 @@ RESPONSE FORMAT (JSON ONLY):
 
         elif action == "SURICATA":
             args = decision.get("args", [])
-            result = run_suricata(args)
+            result = run_tool("suricata", args)
             if result:
                 update_status(f"suricata output: {result.stdout}", "IDS/IPS")
             else:
@@ -668,7 +668,7 @@ RESPONSE FORMAT (JSON ONLY):
 
         elif action == "NETHOGS":
             args = decision.get("args", [])
-            result = run_nethogs(args)
+            result = run_tool("nethogs", args)
             if result:
                 update_status(f"nethogs output: {result.stdout}", "Net Monitor")
             else:
@@ -676,7 +676,7 @@ RESPONSE FORMAT (JSON ONLY):
 
         elif action == "IFTOP":
             args = decision.get("args", [])
-            result = run_iftop(args)
+            result = run_tool("iftop", args)
             if result:
                 update_status(f"iftop output: {result.stdout}", "Net Monitor")
             else:
@@ -684,7 +684,7 @@ RESPONSE FORMAT (JSON ONLY):
 
         elif action == "IPTRAF":
             args = decision.get("args", [])
-            result = run_iptraf(args)
+            result = run_tool("iptraf", args)
             if result:
                 update_status(f"iptraf output: {result.stdout}", "Net Monitor")
             else:
@@ -692,7 +692,7 @@ RESPONSE FORMAT (JSON ONLY):
 
         elif action == "WHOIS":
             args = decision.get("args", [])
-            result = run_whois(args)
+            result = run_tool("whois", args)
             if result:
                 update_status(f"whois output: {result.stdout}", "Whois")
             else:
@@ -700,7 +700,7 @@ RESPONSE FORMAT (JSON ONLY):
 
         elif action == "DIG":
             args = decision.get("args", [])
-            result = run_dig(args)
+            result = run_tool("dig", args)
             if result:
                 update_status(f"dig output: {result.stdout}", "DNS Query")
             else:
@@ -708,7 +708,7 @@ RESPONSE FORMAT (JSON ONLY):
 
         elif action == "NSLOOKUP":
             args = decision.get("args", [])
-            result = run_nslookup(args)
+            result = run_tool("nslookup", args)
             if result:
                 update_status(f"nslookup output: {result.stdout}", "DNS Query")
             else:
@@ -1592,28 +1592,7 @@ def run_tool(tool_name, args=None):
         update_status(f"{tool_name} error: {e}", "Error")
         return None
 
-# Individual tool functions now just call the generic runner
-def run_bettercap(args=None): return run_tool('bettercap', args)
-def run_ettercap(args=None): return run_tool('ettercap', args)
-def run_dnsspoof(args=None): return run_tool('dnsspoof', args)
-def run_dnschef(args=None): return run_tool('dnschef', args)
-def run_tcpdump(args=None): return run_tool('tcpdump', args)
-def run_tshark(args=None): return run_tool('tshark', args)
-def run_arpscan(args=None): return run_tool('arp-scan', args)
-def run_arpwatch(args=None): return run_tool('arpwatch', args)
-def run_netdiscover(args=None): return run_tool('netdiscover', args)
-def run_wifite(args=None): return run_tool('wifite', args)
-def run_hcxdumptool(args=None): return run_tool('hcxdumptool', args)
-def run_hcxpcapngtool(args=None): return run_tool('hcxpcapngtool', args)
-def run_evilginx2(args=None): return run_tool('evilginx2', args)
-def run_setoolkit(args=None): return run_tool('setoolkit', args)
-def run_suricata(args=None): return run_tool('suricata', args)
-def run_nethogs(args=None): return run_tool('nethogs', args)
-def run_iftop(args=None): return run_tool('iftop', args)
-def run_iptraf(args=None): return run_tool('iptraf', args)
-def run_whois(args=None): return run_tool('whois', args)
-def run_dig(args=None): return run_tool('dig', args)
-def run_nslookup(args=None): return run_tool('nslookup', args)
+
 
 
 
