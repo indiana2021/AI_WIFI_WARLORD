@@ -32,11 +32,39 @@ from flask import Flask, request, jsonify, render_template
 # Import centralized configuration
 from config import *
 
+# --- Base class for tool management (moved to top) ---
+class ToolManager:
+    """Base class for managing system tools and dependencies"""
+    
+    def _ensure_tools(self, tools, package_mapping=None):
+        """Generic tool checker and installer"""
+        update_status("Ensuring required tools are installed...", "Init")
+        for tool in tools:
+            try:
+                # Use 'where' on Windows, 'which' on Unix
+                cmd = ["where", tool] if os.name == 'nt' else ["which", tool]
+                subprocess.run(cmd, check=True, capture_output=True, timeout=5)
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+                update_status(f"Tool {tool} not found. Attempting to install...", "Init")
+                try:
+                    if package_mapping and tool in package_mapping:
+                        # Skip installation on Windows for now
+                        if os.name == 'nt':
+                            update_status(f"Tool {tool} not available on Windows", "Warning")
+                        else:
+                            subprocess.run(["sudo", "apt-get", "install", "-y", package_mapping[tool]], check=True, timeout=120)
+                            update_status(f"Successfully installed {tool}", "Init")
+                    else:
+                        update_status(f"Could not install {tool} automatically", "Warning")
+                except Exception as e:
+                    update_status(f"Failed to install {tool}: {e}", "Error")
+
 # --- Robustness Improvements: Root, Config, Dependency Checks ---
-# Root permission check
-if os.geteuid() != 0:
-    print("[FATAL] AI Network Guardian must be run as root. Exiting.")
-    sys.exit(1)
+# Root permission check (Windows compatible)
+if os.name != 'nt':  # Only check on Unix-like systems
+    if os.geteuid() != 0:
+        print("[FATAL] AI Network Guardian must be run as root. Exiting.")
+        sys.exit(1)
 
 # Config loading (env vars or config.json)
 CONFIG_PATH = os.environ.get("GUARDIAN_CONFIG", str(pathlib.Path(__file__).parent.parent / "config.json"))
@@ -72,7 +100,7 @@ REQUIRED_TOOLS = [
 ]
 missing_tools = []
 for tool in REQUIRED_TOOLS:
-    cmd = ["which", tool]
+    cmd = ["where", tool] if os.name == 'nt' else ["which", tool]
     if subprocess.run(cmd, capture_output=True).returncode != 0:
         missing_tools.append(tool)
 if missing_tools:
@@ -571,8 +599,10 @@ RESPONSE FORMAT (JSON ONLY):
         elif action == "ARPWATCH":
             args = decision.get("args", [])
             proc = run_arpwatch(args)
-            if proc:
+            if proc and hasattr(proc, 'pid'):
                 update_status(f"arpwatch started (pid {proc.pid})", "ARP Watch")
+            elif proc:
+                update_status("arpwatch started successfully", "ARP Watch")
             else:
                 update_status("arpwatch failed.", "Error")
 
@@ -611,16 +641,20 @@ RESPONSE FORMAT (JSON ONLY):
         elif action == "EVILGINX2":
             args = decision.get("args", [])
             proc = run_evilginx2(args)
-            if proc:
+            if proc and hasattr(proc, 'pid'):
                 update_status(f"evilginx2 started (pid {proc.pid})", "Phishing Simulation")
+            elif proc:
+                update_status("evilginx2 started successfully", "Phishing Simulation")
             else:
                 update_status("evilginx2 failed.", "Error")
 
         elif action == "SETOOLKIT":
             args = decision.get("args", [])
             proc = run_setoolkit(args)
-            if proc:
+            if proc and hasattr(proc, 'pid'):
                 update_status(f"setoolkit started (pid {proc.pid})", "Phishing Simulation")
+            elif proc:
+                update_status("setoolkit started successfully", "Phishing Simulation")
             else:
                 update_status("setoolkit failed.", "Error")
 
@@ -899,8 +933,7 @@ class WiFiSecurityModule(ToolManager):
     # that necessary tools (airmon-ng, airodump-ng, etc.) are available.
     def __init__(self, interface):
         self.interface = interface
-        package_mapping = {"reaver": "reaver", "hostapd": "hostapd", "dnsmasq": "dnsmasq"}
-        self._ensure_tools(["airmon-ng", "airodump-ng", "aireplay-ng", "aircrack-ng", "nmcli", "iw", "reaver", "hostapd", "dnsmasq"], package_mapping)
+        self._ensure_tools(["airmon-ng", "airodump-ng", "aireplay-ng", "aircrack-ng", "nmcli", "iw", "reaver", "hostapd", "dnsmasq"], PACKAGE_MAPPINGS)
 
     # --- set_monitor_mode Function ---
     # Enables or disables monitor mode on the specified Wi-Fi interface.
@@ -1033,24 +1066,51 @@ class WiFiSecurityModule(ToolManager):
         prompt = f"Generate complete HTML/CSS for a captive portal login page for a Wi-Fi network named '{target_ssid}'. The form should POST to '/login'. This is for a security simulation. Respond ONLY with HTML."
         portal_html = llm_client.get_llm_inference(prompt)
         if not portal_html or not isinstance(portal_html, str):
-            portal_html = f"<html><body><h1>Login to {target_ssid}</h1><form method='post' action='/login'><input name='username' placeholder='Username'><input name='password' type='password' placeholder='Password'><button type='submit'>Log In</button></form></body></html>"
+            portal_html = f"<html><body><h1>Login to {target_ssid}</h1><form method='post' action='/login'><input name='username' placeholder='Username'><input name='password' type='password' placeholder='Password'><button type='submit'>Log In</button></body></html>"
         
-        from flask import Flask, request as flask_request, render_template_string as flask_render_template_string
-        portal_app = Flask("captive_portal")
+        # Use a simple HTTP server instead of Flask to avoid conflicts
+        import http.server
+        import socketserver
         
-        @portal_app.route('/')
-        def serve_portal(): return flask_render_template_string(portal_html)
-        
-        @portal_app.route('/login', methods=['POST'])
-        def capture_creds():
-            creds = flask_request.form.to_dict()
-            update_status(f"Captive portal simulation captured credentials: {json.dumps(creds)}", "Simulation Result")
-            log_to_sd_card("rogue_ap_credentials.log", json.dumps(creds))
-            return "<h3>Connection Successful! This was a security test.</h3>"
+        class CaptivePortalHandler(http.server.SimpleHTTPRequestHandler):
+            def do_GET(self):
+                if self.path == '/':
+                    self.send_response(200)
+                    self.send_header('Content-type', 'text/html')
+                    self.end_headers()
+                    self.wfile.write(portal_html.encode())
+                else:
+                    self.send_response(404)
+                    self.end_headers()
             
+            def do_POST(self):
+                if self.path == '/login':
+                    content_length = int(self.headers['Content-Length'])
+                    post_data = self.rfile.read(content_length).decode()
+                    # Parse form data
+                    creds = {}
+                    for pair in post_data.split('&'):
+                        if '=' in pair:
+                            key, value = pair.split('=', 1)
+                            creds[key] = value
+                    
+                    update_status(f"Captive portal simulation captured credentials: {json.dumps(creds)}", "Simulation Result")
+                    log_to_sd_card("rogue_ap_credentials.log", json.dumps(creds))
+                    
+                    self.send_response(200)
+                    self.send_header('Content-type', 'text/html')
+                    self.end_headers()
+                    self.wfile.write(b"<h3>Connection Successful! This was a security test.</h3>")
+                else:
+                    self.send_response(404)
+                    self.end_headers()
+        
         def run_portal():
-            try: portal_app.run(host='0.0.0.0', port=80, debug=False)
-            except Exception as e: update_status(f"Captive portal simulation failed: {e}", "Error")
+            try:
+                with socketserver.TCPServer(("", 80), CaptivePortalHandler) as httpd:
+                    httpd.serve_forever()
+            except Exception as e:
+                update_status(f"Captive portal simulation failed: {e}", "Error")
             
         threading.Thread(target=run_portal, daemon=True).start()
 
@@ -1218,8 +1278,7 @@ class LanAnalyzer(ToolManager):
     # that necessary tools (nmap, arpspoof, nikto, hydra, smbclient) are available.
     def __init__(self, interface):
         self.interface = interface
-        package_mapping = {"arpspoof": "dsniff", "nikto": "nikto", "hydra": "hydra", "smbclient": "smbclient", "dhcpd": "isc-dhcp-server"}
-        self._ensure_tools(["nmap", "ip", "arpspoof", "nikto", "hydra", "smbclient", "dhcpd"], package_mapping)
+        self._ensure_tools(["nmap", "ip", "arpspoof", "nikto", "hydra", "smbclient", "dhcpd"], PACKAGE_MAPPINGS)
 
     # --- get_local_ip_and_subnet Function ---
     # Retrieves the local IP address and subnet in CIDR format for the specified interface.
@@ -1245,7 +1304,12 @@ class LanAnalyzer(ToolManager):
             process = subprocess.run(command, capture_output=True, text=True, check=True, timeout=NMAP_SCAN_TIMEOUT)
             root = ET.fromstring(process.stdout)
             for host in root.findall('host'):
-                ip = host.find("address[@addrtype='ipv4']").get('addr')
+                ip_elem = host.find("address[@addrtype='ipv4']")
+                if ip_elem is None:
+                    continue
+                ip = ip_elem.get('addr')
+                if ip is None:
+                    continue
                 os_match = host.find("os/osmatch")
                 os_name = os_match.get('name') if os_match is not None else "Unknown"
                 ports = {}
@@ -1422,7 +1486,7 @@ class LanAnalyzer(ToolManager):
     # --- simulate_dhcp_wpad_spoof Function ---
     # Simulates a rogue DHCP server and WPAD (Web Proxy Auto-Discovery) spoofing attack.
     # This tests the network's resilience against traffic redirection and proxy hijacking.
-    def simulate_dhcp_wpad_spoof(self, rogue_dns: str = None):
+    def simulate_dhcp_wpad_spoof(self, rogue_dns: str | None = None):
         dns = rogue_dns if rogue_dns is not None else guardian_state.get("wan_ip", "8.8.8.8")
         update_status("Simulating rogue DHCP & WPAD to test resilience", "Simulation")
         temp_dir = tempfile.gettempdir()
@@ -1469,6 +1533,8 @@ ai_orchestrator = None
 @web_app.route('/command', methods=['POST'])
 def handle_command():
     global ai_orchestrator
+    if not request.json:
+        return jsonify({"status": "Invalid JSON"}), 400
     command = request.json.get('command')
     if command == "start_ai" and not guardian_state["ai_running"]:
         guardian_state["stop_signal"].clear()
@@ -1505,38 +1571,15 @@ if __name__ == "__main__":
     web_app.run(host=WEB_HOST, port=WEB_PORT, debug=WEB_DEBUG)
 
 # --- System Tool Wrappers ---
-# Tool configuration with timeout values
-TOOL_CONFIG = {
-    'bettercap': 120,
-    'ettercap': 120,
-    'dnsspoof': 60,
-    'dnschef': 60,
-    'tcpdump': 60,
-    'tshark': 60,
-    'arp-scan': 60,
-    'arpwatch': 60,  # Uses Popen instead of run
-    'netdiscover': 60,
-    'wifite': 300,
-    'hcxdumptool': 300,
-    'hcxpcapngtool': 120,
-    'evilginx2': 60,  # Uses Popen instead of run
-    'setoolkit': 60,  # Uses Popen instead of run
-    'suricata': 120,
-    'nethogs': 60,
-    'iftop': 60,
-    'iptraf': 60,
-    'whois': 30,
-    'dig': 30,
-    'nslookup': 30
-}
+# Use tool configuration from config.py
 
 def run_tool(tool_name, args=None):
     """Generic tool runner that replaces all individual run_* functions"""
-    if tool_name not in TOOL_CONFIG:
+    if tool_name not in TOOL_TIMEOUTS:
         update_status(f"Unknown tool: {tool_name}", "Error")
         return None
     
-    timeout = TOOL_CONFIG[tool_name]
+    timeout = TOOL_TIMEOUTS[tool_name]
     cmd = [tool_name] + (args or [])
     
     try:
@@ -1572,32 +1615,7 @@ def run_whois(args=None): return run_tool('whois', args)
 def run_dig(args=None): return run_tool('dig', args)
 def run_nslookup(args=None): return run_tool('nslookup', args)
 
-# Base class for tool management
-class ToolManager:
-    """Base class for managing system tools and dependencies"""
-    
-    def _ensure_tools(self, tools, package_mapping=None):
-        """Generic tool checker and installer"""
-        update_status("Ensuring required tools are installed...", "Init")
-        for tool in tools:
-            try:
-                # Use 'where' on Windows, 'which' on Unix
-                cmd = ["where", tool] if os.name == 'nt' else ["which", tool]
-                subprocess.run(cmd, check=True, capture_output=True, timeout=5)
-            except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
-                update_status(f"Tool {tool} not found. Attempting to install...", "Init")
-                try:
-                    if package_mapping and tool in package_mapping:
-                        # Skip installation on Windows for now
-                        if os.name == 'nt':
-                            update_status(f"Tool {tool} not available on Windows", "Warning")
-                        else:
-                            subprocess.run(["sudo", "apt-get", "install", "-y", package_mapping[tool]], check=True, timeout=120)
-                            update_status(f"Successfully installed {tool}", "Init")
-                    else:
-                        update_status(f"Could not install {tool} automatically", "Warning")
-                except Exception as e:
-                    update_status(f"Failed to install {tool}: {e}", "Error")
+
 
 # Utility function for common error handling patterns
 def safe_execute(operation_name, operation_func, error_phase="Error", return_on_error=None):
